@@ -1,6 +1,6 @@
 # OpenBL3CMM
 
-A visual hotfix mod editor for Borderlands 3, inspired by [BLCMM](https://github.com/BLCM/OpenBLCMM) (Borderlands Community Mod Manager).
+A visual hotfix mod editor for Borderlands 3, inspired by [OpenBLCMM](https://github.com/BLCM/OpenBLCMM) (Borderlands Community Mod Manager).
 
 Made by Ty-Gone.
 
