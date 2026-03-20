@@ -156,4 +156,5 @@ blmod.py      — .blmod YAML format parser/serializer
 
 ## License
 
-Open source. Do whatever you want with it.
+OpenBL3CMM is licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html).
+A copy can be found at [LICENSE.txt](LICENSE.txt).
