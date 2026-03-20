@@ -10,6 +10,13 @@ OpenBL3CMM lets you create, edit, and manage BL3 hotfix mods with a visual inter
 
 Think of it as BLCMM, but for Borderlands 3.
 
+[
+
+![OpenBL3CMM Demo](https://img.youtube.com/vi/wVtU341Y2wE/maxresdefault.jpg)
+
+]
+(https://youtu.be/wVtU341Y2wE)
+
 ## Features
 
 - **Visual category tree** with checkboxes to enable/disable individual entries or entire categories
