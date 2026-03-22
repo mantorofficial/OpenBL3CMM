@@ -64,7 +64,9 @@ def export_to_text(mod: ModFile, enabled_only: bool = False) -> str:
         pass
 
     # ---- Body ----
-    for child in mod.root.children:
+    # Flatten: get the actual content categories, skipping redundant "root" wrappers
+    children = _get_exportable_children(mod.root)
+    for child in children:
         if isinstance(child, Category):
             _export_category(child, lines, depth=0, enabled_only=enabled_only)
 
@@ -73,6 +75,17 @@ def export_to_text(mod: ModFile, enabled_only: bool = False) -> str:
     if not text.endswith("\n"):
         text += "\n"
     return text
+
+
+def _get_exportable_children(root: Category) -> list:
+    """Flatten nested 'root' categories to avoid wrapping on each save."""
+    children = root.children
+    # Keep unwrapping if the only child is a Category named "root"
+    while (len(children) == 1
+           and isinstance(children[0], Category)
+           and children[0].name.lower() == "root"):
+        children = children[0].children
+    return children
 
 
 def _export_category(cat: Category, lines: list[str], depth: int, enabled_only: bool):
@@ -117,8 +130,8 @@ def _export_entry(entry: HotfixEntry, lines: list[str]):
     if entry.enabled:
         lines.append(entry.raw_line)
     else:
-        # Disabled entries are commented out
-        lines.append(f"##DISABLED## {entry.raw_line}")
+        # Disabled entries are commented out so the game skips them
+        lines.append(f"#{entry.raw_line}")
 
 
 def export_to_file(mod: ModFile, path: str | Path, enabled_only: bool = False):

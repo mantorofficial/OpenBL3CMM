@@ -18,6 +18,9 @@ source_files = [
     'commands.py',
     'blimp.py',
     'blmod.py',
+    'object_explorer.py',
+    'hotfix_highlighter.py',
+    'generate_datapack.py',
 ]
 
 a = Analysis(
@@ -32,6 +35,9 @@ a = Analysis(
         'exporter',
         'blimp',
         'blmod',
+        'object_explorer',
+        'hotfix_highlighter',
+        'generate_datapack',
         'yaml',
         'PySide6',
         'PySide6.QtCore',

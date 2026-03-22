@@ -870,12 +870,113 @@ class ModFileDialog(QDialog):
 # New Hotfix Entry Dialog
 # ──────────────────────────────────────────────
 
+def auto_format_hotfix(text: str) -> str:
+    """
+    Auto-format a hotfix command with BLCMM-style indentation.
+    Formats struct values like (Key=Value, ...) into multi-line indented form.
+    Works for both simple commands and raw Spark format.
+    """
+    lines = text.strip().splitlines()
+    single = " ".join(l.strip() for l in lines)
+
+    # For simple commands: "set OBJ ATTR VALUE"
+    # Split into header (cmd obj attr) and value
+    header = ""
+    value_part = ""
+
+    # Detect simple command
+    simple_cmds = ("set ", "edit ", "merge ", "early_set ", "set_cmp ")
+    if any(single.lower().startswith(c) for c in simple_cmds):
+        parts = single.split(None, 3)
+        if len(parts) >= 4:
+            header = f"{parts[0]} {parts[1]} {parts[2]}"
+            value_part = parts[3]
+        elif len(parts) == 3:
+            return single  # No value to format
+        else:
+            return single
+    elif single.startswith("Spark") or single.startswith("Inject"):
+        # Raw Spark format — find the value after the last ,0,,  or ,,
+        # Look for the value portion (after from_length,,)
+        idx = single.rfind(",0,,")
+        if idx >= 0:
+            header = single[:idx + 4]  # include ,0,,
+            value_part = single[idx + 4:]
+        else:
+            idx = single.rfind(",,")
+            if idx >= 0:
+                header = single[:idx + 2]
+                value_part = single[idx + 2:]
+            else:
+                return single
+    else:
+        # Unknown format — try generic struct formatting
+        value_part = single
+        header = ""
+
+    # If value has no parens, no formatting needed
+    if '(' not in value_part:
+        return single
+
+    # Format the value part with indentation
+    formatted_value = _format_struct(value_part, base_indent=1 if header else 0)
+
+    if header:
+        return f"{header}\n{formatted_value}"
+    return formatted_value
+
+
+def _format_struct(text: str, base_indent: int = 0) -> str:
+    """Format a BL3 struct value with BLCMM-style indentation."""
+    result = []
+    indent = base_indent
+    i = 0
+    text = text.strip()
+
+    while i < len(text):
+        ch = text[i]
+
+        if ch == '(':
+            result.append('(\n')
+            indent += 1
+            result.append('    ' * indent)
+            i += 1
+            while i < len(text) and text[i] == ' ':
+                i += 1
+            continue
+        elif ch == ')':
+            # Remove trailing whitespace/comma
+            content = ''.join(result).rstrip()
+            if content.endswith(','):
+                content = content[:-1]
+            result = [content]
+            result.append('\n')
+            indent = max(0, indent - 1)
+            result.append('    ' * indent)
+            result.append(')')
+            i += 1
+            continue
+        elif ch == ',' and indent > base_indent:
+            result.append(',\n')
+            result.append('    ' * indent)
+            i += 1
+            while i < len(text) and text[i] == ' ':
+                i += 1
+            continue
+        else:
+            result.append(ch)
+            i += 1
+
+    return ''.join(result)
+
+
 class NewEntryDialog(QDialog):
     """Dialog for creating a new hotfix entry — three modes: Simple, Raw Text, or Spark."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("New Hotfix Entry")
+        self.setWindowModality(Qt.WindowModality.NonModal)
 
         self._main_layout = QVBoxLayout(self)
         self._main_layout.setSpacing(6)
@@ -941,6 +1042,19 @@ class NewEntryDialog(QDialog):
         self.raw_text_edit.setMinimumHeight(200)
         tl.addWidget(self.raw_text_edit)
 
+        btn_fmt = QPushButton("Auto Format")
+        btn_fmt.clicked.connect(self._auto_format_raw)
+        tl.addWidget(btn_fmt)
+
+        # Attach syntax highlighter to raw text mode
+        from hotfix_highlighter import HotfixHighlighter
+        self._highlighter = HotfixHighlighter(self.raw_text_edit.document())
+
+        # Bracket matching for raw text mode
+        self.raw_text_edit.cursorPositionChanged.connect(
+            lambda: self._highlight_bracket(self.raw_text_edit)
+        )
+
         self._main_layout.addWidget(self.text_widget)
 
         # ── Raw Spark mode ──
@@ -990,11 +1104,119 @@ class NewEntryDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
         self._main_layout.addWidget(buttons)
 
         self._update_help()
+
+    def _on_ok(self):
+        """Validate before accepting."""
+        from hotfix_highlighter import validate_hotfix
+
+        # Get the text that would be submitted
+        if self.mode_simple.isChecked():
+            cmd = self.cmd_combo.currentText()
+            args = self.simple_edit.text().strip()
+            text = f"{cmd} {args}" if args else ""
+        elif self.mode_raw_spark.isChecked():
+            htype = self.type_combo.currentText()
+            params = self.params_edit.text().strip()
+            obj = self.object_edit.text().strip()
+            attr = self.attr_edit.text().strip()
+            dtkey = self.dtkey_edit.text().strip()
+            idx = self.index_edit.text().strip()
+            val = self.value_edit.text().strip()
+            if htype == "InjectNewsItem":
+                text = f"InjectNewsItem,{val}"
+            else:
+                text = f"{htype},{params},{obj},{attr},{dtkey},{idx},,{val}"
+        else:
+            text = self.raw_text_edit.toPlainText().strip()
+
+        if not text:
+            QMessageBox.warning(self, "Empty", "No command entered.")
+            return
+
+        problems = validate_hotfix(text)
+        if problems:
+            msg = "Your code has the following potential problems:\n\n"
+            for p in problems:
+                msg += f"  • {p}\n"
+            msg += "\nContinue anyway?"
+            reply = QMessageBox.question(
+                self, "Confirm", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self.accept()
+
+    def _auto_format_raw(self):
+        """Auto-format the raw text command."""
+        text = self.raw_text_edit.toPlainText().strip()
+        formatted = auto_format_hotfix(text)
+        self.raw_text_edit.setPlainText(formatted)
+
+    def _highlight_bracket(self, editor):
+        """Highlight matching bracket in a QTextEdit."""
+        from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
+
+        editor.setExtraSelections([])
+        cursor = editor.textCursor()
+        text = editor.toPlainText()
+        pos = cursor.position()
+        if not text:
+            return
+
+        ch = text[pos] if pos < len(text) else ''
+        ch_before = text[pos - 1] if pos > 0 else ''
+        match_pos = bracket_pos = -1
+
+        def find_fwd(t, p):
+            d = 0
+            for i in range(p, len(t)):
+                if t[i] == '(': d += 1
+                elif t[i] == ')':
+                    d -= 1
+                    if d == 0: return i
+            return -1
+
+        def find_bwd(t, p):
+            d = 0
+            for i in range(p, -1, -1):
+                if t[i] == ')': d += 1
+                elif t[i] == '(':
+                    d -= 1
+                    if d == 0: return i
+            return -1
+
+        if ch == '(':
+            bracket_pos, match_pos = pos, find_fwd(text, pos)
+        elif ch == ')':
+            bracket_pos, match_pos = pos, find_bwd(text, pos)
+        elif ch_before == '(':
+            bracket_pos, match_pos = pos - 1, find_fwd(text, pos - 1)
+        elif ch_before == ')':
+            bracket_pos, match_pos = pos - 1, find_bwd(text, pos - 1)
+
+        if match_pos < 0 or bracket_pos < 0:
+            return
+
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#5a5a2a"))
+        fmt.setForeground(QColor("#ffff00"))
+        selections = []
+        for p in (bracket_pos, match_pos):
+            sel = editor.ExtraSelection()
+            c = QTextCursor(editor.document())
+            c.setPosition(p)
+            c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor)
+            sel.cursor = c
+            sel.format = fmt
+            selections.append(sel)
+        editor.setExtraSelections(selections)
 
     def _set_mode(self, mode: str):
         self.mode_simple.setChecked(mode == "simple")
@@ -1045,14 +1267,25 @@ class NewEntryDialog(QDialog):
             else:
                 raw = f"{htype},{params},{obj},{attr},{dtkey},{idx},,{val}"
         else:
-            # Raw text mode — try converting simple commands to Spark format
-            raw = self.raw_text_edit.toPlainText().strip()
-            if not raw:
+            # Raw text mode
+            text = self.raw_text_edit.toPlainText().strip()
+            if not text:
                 return None
-            # Check if it's a simple command and convert it
-            converted = simple_to_spark(raw)
-            if converted:
-                raw = converted
+            # Collapse multi-line to single line
+            raw = " ".join(line.strip() for line in text.splitlines())
+            # Clean up struct spacing
+            import re
+            raw = re.sub(r'\(\s+', '(', raw)
+            raw = re.sub(r'\s+\)', ')', raw)
+            raw = re.sub(r',\s+', ',', raw)
+            # Only convert if it's not already Spark format
+            spark_types = ("SparkPatchEntry", "SparkLevelPatchEntry",
+                           "SparkCharacterLoadedEntry", "SparkEarlyLevelPatchEntry",
+                           "InjectNewsItem")
+            if not any(raw.startswith(st) for st in spark_types):
+                converted = simple_to_spark(raw)
+                if converted:
+                    raw = converted
 
         return HotfixEntry(raw_line=raw, comment=comment, enabled=True)
 
@@ -1067,41 +1300,209 @@ class EditEntryDialog(QDialog):
     def __init__(self, entry: HotfixEntry, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Hotfix Entry")
-        self.setFixedWidth(600)
+        self.resize(800, 400)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.entry = entry
+        self._original_raw_line = entry.raw_line  # preserve for DT column recovery
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
-        layout.addWidget(QLabel("Comment:"))
+        # Top bar with comment + auto format
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Comment:"))
         self.comment_edit = QLineEdit(entry.comment)
-        layout.addWidget(self.comment_edit)
+        top.addWidget(self.comment_edit, stretch=1)
+        btn_fmt = QPushButton("Auto Format")
+        btn_fmt.clicked.connect(self._auto_format)
+        top.addWidget(btn_fmt)
+        layout.addLayout(top)
 
         layout.addWidget(QLabel("Command:"))
         self.raw_edit = QTextEdit()
-        self.raw_edit.setPlainText(entry.simple_form)
-        self.raw_edit.setFixedHeight(80)
-        layout.addWidget(self.raw_edit)
+        display = entry.simple_form if entry.simple_form else entry.raw_line
+        # Auto-format structs for readability
+        if '(' in display:
+            display = auto_format_hotfix(display)
+        self.raw_edit.setPlainText(display)
+        self.raw_edit.setMinimumHeight(150)
+        layout.addWidget(self.raw_edit, stretch=1)
+
+        # Attach syntax highlighter
+        from hotfix_highlighter import HotfixHighlighter
+        self._highlighter = HotfixHighlighter(self.raw_edit.document())
+
+        # Bracket matching
+        self.raw_edit.cursorPositionChanged.connect(self._highlight_matching_bracket)
+        self._bracket_selections = []
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         self.adjustSize()
 
+    def _on_ok(self):
+        """Validate before accepting."""
+        from hotfix_highlighter import validate_hotfix
+        text = self.raw_edit.toPlainText().strip()
+        problems = validate_hotfix(text)
+        if problems:
+            msg = "Your code has the following potential problems:\n\n"
+            for p in problems:
+                msg += f"  • {p}\n"
+            msg += "\nContinue anyway?"
+            reply = QMessageBox.question(
+                self, "Confirm", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self.accept()
+
+    def _auto_format(self):
+        """Auto-format the command text with proper indentation."""
+        text = self.raw_edit.toPlainText().strip()
+        formatted = auto_format_hotfix(text)
+        self.raw_edit.setPlainText(formatted)
+
+    def _highlight_matching_bracket(self):
+        """Highlight matching bracket when cursor is on ( or )."""
+        from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor
+
+        # Clear previous highlights
+        self.raw_edit.setExtraSelections([])
+
+        cursor = self.raw_edit.textCursor()
+        text = self.raw_edit.toPlainText()
+        pos = cursor.position()
+
+        if pos >= len(text):
+            return
+
+        ch = text[pos] if pos < len(text) else ''
+        # Also check character before cursor
+        ch_before = text[pos - 1] if pos > 0 else ''
+
+        match_pos = -1
+        bracket_pos = -1
+
+        if ch == '(':
+            bracket_pos = pos
+            match_pos = self._find_matching_forward(text, pos)
+        elif ch == ')':
+            bracket_pos = pos
+            match_pos = self._find_matching_backward(text, pos)
+        elif ch_before == '(':
+            bracket_pos = pos - 1
+            match_pos = self._find_matching_forward(text, pos - 1)
+        elif ch_before == ')':
+            bracket_pos = pos - 1
+            match_pos = self._find_matching_backward(text, pos - 1)
+
+        if match_pos < 0 or bracket_pos < 0:
+            return
+
+        # Create highlight format
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#5a5a2a"))
+        fmt.setForeground(QColor("#ffff00"))
+
+        selections = []
+        for p in (bracket_pos, match_pos):
+            sel = self.raw_edit.ExtraSelection()
+            c = QTextCursor(self.raw_edit.document())
+            c.setPosition(p)
+            c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor)
+            sel.cursor = c
+            sel.format = fmt
+            selections.append(sel)
+
+        self.raw_edit.setExtraSelections(selections)
+
+    def _find_matching_forward(self, text, pos):
+        """Find matching ) for ( at pos."""
+        depth = 0
+        for i in range(pos, len(text)):
+            if text[i] == '(':
+                depth += 1
+            elif text[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    return i
+        return -1
+
+    def _find_matching_backward(self, text, pos):
+        """Find matching ( for ) at pos."""
+        depth = 0
+        for i in range(pos, -1, -1):
+            if text[i] == ')':
+                depth += 1
+            elif text[i] == '(':
+                depth -= 1
+                if depth == 0:
+                    return i
+        return -1
+
     def apply(self):
         self.entry.comment = self.comment_edit.text().strip()
         text = self.raw_edit.toPlainText().strip()
-        # Try converting simple command to Spark format
-        converted = simple_to_spark(text)
+
+        # Collapse multi-line to single line (for auto-formatted structs)
+        collapsed = " ".join(line.strip() for line in text.splitlines())
+        # Clean up struct spacing: "( Key=Val )" → "(Key=Val)"
+        import re
+        collapsed = re.sub(r'\(\s+', '(', collapsed)
+        collapsed = re.sub(r'\s+\)', ')', collapsed)
+        collapsed = re.sub(r',\s+', ',', collapsed)
+
+        # Check if it's already Spark format — don't convert
+        spark_types = ("SparkPatchEntry", "SparkLevelPatchEntry",
+                       "SparkCharacterLoadedEntry", "SparkEarlyLevelPatchEntry",
+                       "InjectNewsItem")
+        if any(collapsed.startswith(st) for st in spark_types):
+            self.entry.raw_line = collapsed
+            self.entry._parse()
+            return
+
+        # If original was a Type 2 DataTable hotfix, recover the column name
+        # and rebuild the Spark line from the simplified "set TABLE ROW VALUE"
+        old_raw = self._original_raw_line
+        if old_raw and "(1,2,0" in old_raw:
+            old_parts = old_raw.split(",")
+            # Type 2 layout: HotfixType,(params),object,row,column,fromlength,fromval,toval
+            # Find column: it's after params, object, row
+            old_col = old_parts[4] if len(old_parts) > 4 else ""
+            if old_col:
+                # Parse the simple form: "set TABLE ROW VALUE" or "edit TABLE ROW VALUE"
+                cmd_parts = collapsed.split(None, 3)
+                if len(cmd_parts) >= 3:
+                    cmd_name = cmd_parts[0].lower()
+                    table = cmd_parts[1]
+                    row = cmd_parts[2]
+                    value = cmd_parts[3] if len(cmd_parts) > 3 else ""
+
+                    # Determine hotfix type from command or original
+                    if cmd_name == "edit" or old_raw.startswith("SparkLevelPatchEntry"):
+                        # Recover params from original
+                        params_start = old_raw.index(",(") + 1
+                        params_end = old_raw.index("),", params_start) + 1
+                        params = old_raw[params_start:params_end]
+                        self.entry.raw_line = f"SparkLevelPatchEntry,{params},{table},{row},{old_col},0,,{value}"
+                    else:
+                        self.entry.raw_line = f"SparkPatchEntry,(1,2,0,),{table},{row},{old_col},0,,{value}"
+                    self.entry._parse()
+                    return
+
+        converted = simple_to_spark(collapsed)
         if converted:
             self.entry.raw_line = converted
         else:
-            # Already Spark format or unknown — store as-is
-            self.entry.raw_line = text
+            self.entry.raw_line = collapsed
         self.entry._parse()
 
 
@@ -1378,9 +1779,18 @@ class DragDropTreeWidget(QTreeWidget):
         if has_entries and dest_parent is root:
             return
 
-        # Remove from old locations
+        # Remove from old locations — track if removal affects dest_index
         for d in drag_data:
+            # If removing from same parent and before dest_index, adjust
+            old_parent = self._find_parent_in(root, d)
+            if old_parent is dest_parent:
+                old_idx = self._index_of(dest_parent, d)
+                if old_idx < dest_index:
+                    dest_index -= 1
             self._remove_item(root, d)
+
+        # Clean up empty intermediate categories that were just wrappers
+        # (don't clean dest_parent itself)
 
         # Clamp
         if dest_index > len(dest_parent.children):
@@ -1451,7 +1861,9 @@ class MainWindow(QMainWindow):
         # Set window icon
         icon_path = _get_resource_path("openbl3cmm.ico")
         if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+            icon = QIcon()
+            icon.addFile(str(icon_path))
+            self.setWindowIcon(icon)
 
         self.mod: ModFile | None = None
         self._unsaved = False
@@ -1595,6 +2007,12 @@ class MainWindow(QMainWindow):
         act_font = view_menu.addAction("Font && Size Settings...")
         act_font.triggered.connect(self._open_font_settings)
 
+        # Tools
+        tools_menu = mb.addMenu("&Tools")
+        act_oe = tools_menu.addAction("&Object Explorer")
+        act_oe.setShortcut("Ctrl+E")
+        act_oe.triggered.connect(self._open_object_explorer)
+
         # Help
         help_menu = mb.addMenu("&Help")
         act_about = help_menu.addAction("&About")
@@ -1648,14 +2066,17 @@ class MainWindow(QMainWindow):
         self.tree.items_moved.connect(self._on_items_moved)
         left_layout.addWidget(self.tree)
 
+        left.setMinimumWidth(400)
         splitter.addWidget(left)
 
         # Right: detail panel
         right = QWidget()
+        right.setMaximumWidth(500)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(4, 4, 4, 4)
 
         self.detail_label = QLabel("Select an entry to view details")
+        self.detail_label.setWordWrap(True)
         self.detail_label.setStyleSheet(f"color: {COLOR_ACCENT}; font-weight: bold; font-size: 11pt;")
         right_layout.addWidget(self.detail_label)
 
@@ -1669,6 +2090,7 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self.detail_comment)
 
         self.detail_type = QLabel("")
+        self.detail_type.setWordWrap(True)
         info_layout.addWidget(self.detail_type)
 
         self.detail_object = QLabel("")
@@ -1677,6 +2099,7 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self.detail_object)
 
         self.detail_attr = QLabel("")
+        self.detail_attr.setWordWrap(True)
         info_layout.addWidget(self.detail_attr)
 
         right_layout.addWidget(info_group)
@@ -1844,13 +2267,30 @@ class MainWindow(QMainWindow):
 
     # ── Actions ──
 
+    def _try_load_datapack_for_highlighter(self):
+        """Load the saved OE datapack so the syntax highlighter can validate paths."""
+        try:
+            s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+            db_path = s.value("object_explorer_db", "")
+            if db_path and Path(db_path).is_file():
+                from object_explorer import ObjectExplorerDB
+                from hotfix_highlighter import set_datapack
+                db = ObjectExplorerDB(db_path)
+                set_datapack(db)
+        except Exception:
+            pass
+
     def _auto_load_last_file(self):
         """Try to reopen the last file from the previous session."""
+        # Also try to load the OE datapack for the syntax highlighter
+        self._try_load_datapack_for_highlighter()
+
         s = QSettings(SETTINGS_ORG, SETTINGS_APP)
         last_file = s.value("last_opened_file", "")
         if last_file and Path(last_file).is_file():
             try:
                 self.mod = parse_file(last_file)
+                self._flatten_root()
                 self._unsaved = False
                 # Load saved expanded state
                 saved_expanded = self._load_expanded_state()
@@ -1889,7 +2329,8 @@ class MainWindow(QMainWindow):
         if self._unsaved and not self._confirm_discard():
             return
 
-        dlg = ModFileDialog(self, mode="open", caption="Open BL3 Hotfix Mod")
+        dlg = ModFileDialog(self, mode="open", caption="Open BL3 Hotfix Mod",
+                            filter_str="All Mod Files (*.bl3hotfix *.blmod *.txt);;BL3 Hotfix (*.bl3hotfix);;BLMOD (*.blmod);;Text Files (*.txt);;All Files (*)")
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -1899,6 +2340,7 @@ class MainWindow(QMainWindow):
 
         try:
             self.mod = parse_file(path)
+            self._flatten_root()
             self._unsaved = False
             self._populate_tree()
             self.setWindowTitle(f"{APP_NAME} — {self.mod.name}")
@@ -1917,9 +2359,10 @@ class MainWindow(QMainWindow):
     def _save_file_as(self):
         if not self.mod:
             return
-        default_name = self.mod.name.replace(" ", "_") + ".bl3hotfix"
+        default_name = self.mod.name.replace(" ", "_") + ".blmod"
         dlg = ModFileDialog(self, mode="save", caption="Save BL3 Hotfix Mod",
-                            default_name=default_name)
+                            default_name=default_name,
+                            filter_str="BLMOD Files (*.blmod);;BL3 Hotfix (*.bl3hotfix);;Text Files (*.txt);;All Files (*)")
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.get_path():
             self._do_save(dlg.get_path())
 
@@ -1937,9 +2380,10 @@ class MainWindow(QMainWindow):
     def _export_enabled(self):
         if not self.mod:
             return
-        default_name = self.mod.name.replace(" ", "_") + "_enabled.bl3hotfix"
+        default_name = self.mod.name.replace(" ", "_") + "_enabled.blmod"
         dlg = ModFileDialog(self, mode="save", caption="Export Enabled Entries Only",
-                            default_name=default_name)
+                            default_name=default_name,
+                            filter_str="BLMOD Files (*.blmod);;BL3 Hotfix (*.bl3hotfix);;Text Files (*.txt);;All Files (*)")
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.get_path():
             try:
                 export_to_file(self.mod, dlg.get_path(), enabled_only=True)
@@ -2004,68 +2448,69 @@ class MainWindow(QMainWindow):
         if not self.mod:
             return
         dlg = NewEntryDialog(self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        entry = dlg.get_entry()
-        if not entry:
-            return
 
-        # Use last highlighted category if available
-        target = self._last_category
-
-        # Fallback: last top-level category, or create one
-        if target is None:
-            if not self.mod.root.children:
-                target = Category(name="General")
-                self.mod.root.add_child(target)
-            else:
-                for child in reversed(self.mod.root.children):
-                    if isinstance(child, Category):
-                        target = child
-                        break
-                if target is None:
+        def on_accepted():
+            entry = dlg.get_entry()
+            if not entry:
+                return
+            target = self._last_category
+            if target is None:
+                if not self.mod.root.children:
                     target = Category(name="General")
                     self.mod.root.add_child(target)
+                else:
+                    for child in reversed(self.mod.root.children):
+                        if isinstance(child, Category):
+                            target = child
+                            break
+                    if target is None:
+                        target = Category(name="General")
+                        self.mod.root.add_child(target)
+            target.add_child(entry)
+            self._mark_unsaved()
+            self._populate_tree()
 
-        target.add_child(entry)
-        self._mark_unsaved()
-        self._populate_tree()
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
 
     def _add_entry_contextual(self):
         """Add a new entry inside the selected category (right-click / Insert)."""
         if not self.mod:
             return
         dlg = NewEntryDialog(self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        entry = dlg.get_entry()
-        if not entry:
-            return
-        target: Category | None = None
-        sel = self.tree.currentItem()
-        if sel:
-            data = sel.data(0, ROLE_DATA)
-            if isinstance(data, Category):
-                target = data
-            elif isinstance(data, HotfixEntry):
-                parent_item = sel.parent()
-                if parent_item:
-                    target = parent_item.data(0, ROLE_DATA)
-        if target is None:
-            if not self.mod.root.children:
-                target = Category(name="General")
-                self.mod.root.add_child(target)
-            else:
-                for child in reversed(self.mod.root.children):
-                    if isinstance(child, Category):
-                        target = child
-                        break
-                if target is None:
+
+        def on_accepted():
+            entry = dlg.get_entry()
+            if not entry:
+                return
+            target: Category | None = None
+            sel = self.tree.currentItem()
+            if sel:
+                data = sel.data(0, ROLE_DATA)
+                if isinstance(data, Category):
+                    target = data
+                elif isinstance(data, HotfixEntry):
+                    parent_item = sel.parent()
+                    if parent_item:
+                        target = parent_item.data(0, ROLE_DATA)
+            if target is None:
+                if not self.mod.root.children:
                     target = Category(name="General")
                     self.mod.root.add_child(target)
-        target.add_child(entry)
-        self._mark_unsaved()
-        self._populate_tree()
+                else:
+                    for child in reversed(self.mod.root.children):
+                        if isinstance(child, Category):
+                            target = child
+                            break
+                    if target is None:
+                        target = Category(name="General")
+                        self.mod.root.add_child(target)
+            target.add_child(entry)
+            self._mark_unsaved()
+            self._populate_tree()
+
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
 
     def _toggle_selected(self):
         items = self.tree.selectedItems()
@@ -2144,10 +2589,14 @@ class MainWindow(QMainWindow):
         data = item.data(0, ROLE_DATA)
         if isinstance(data, HotfixEntry):
             dlg = EditEntryDialog(data, self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
+
+            def on_accepted():
                 dlg.apply()
                 self._mark_unsaved()
                 self._populate_tree()
+
+            dlg.accepted.connect(on_accepted)
+            dlg.show()
 
     def _on_double_click(self, item: QTreeWidgetItem, column: int):
         data = item.data(0, ROLE_DATA)
@@ -2214,6 +2663,20 @@ class MainWindow(QMainWindow):
         self._mark_unsaved()
         self._populate_tree()
 
+    def _flatten_root(self):
+        """Flatten nested 'root' wrappers in the model (only on load)."""
+        if not self.mod:
+            return
+        root = self.mod.root
+        while (len(root.children) == 1
+               and isinstance(root.children[0], Category)
+               and root.children[0].name.lower() == "root"):
+            inner = root.children[0]
+            root.children = inner.children
+            for c in root.children:
+                if isinstance(c, Category):
+                    c.parent = root
+
     def _on_item_changed(self, item: QTreeWidgetItem, column: int):
         """Sync checkbox state back to the data model."""
         if column != 0 or self._updating_tree:
@@ -2226,9 +2689,11 @@ class MainWindow(QMainWindow):
                 data.enabled = new_enabled
                 self._style_entry_item(item, data)
                 self._mark_unsaved()
-                # Update parent category counts without full rebuild
+                # Update parent category labels
                 self._updating_tree = True
+                self.tree.blockSignals(True)
                 self._refresh_category_labels()
+                self.tree.blockSignals(False)
                 self._updating_tree = False
 
         elif isinstance(data, Category):
@@ -2236,9 +2701,34 @@ class MainWindow(QMainWindow):
             checked = item.checkState(0) != Qt.CheckState.Unchecked
             self._set_category_enabled(data, checked)
             self._mark_unsaved()
+            # Update child checkboxes in-place instead of full rebuild
             self._updating_tree = True
-            self._populate_tree()
+            self.tree.blockSignals(True)
+            self._sync_children_checkboxes(item, checked)
+            self._refresh_category_labels()
+            self.tree.blockSignals(False)
             self._updating_tree = False
+
+    def _sync_children_checkboxes(self, item: QTreeWidgetItem, checked: bool):
+        """Recursively sync checkbox states of all children to match the data model."""
+        for i in range(item.childCount()):
+            child_item = item.child(i)
+            child_data = child_item.data(0, ROLE_DATA)
+            if isinstance(child_data, HotfixEntry):
+                child_item.setCheckState(
+                    0, Qt.CheckState.Checked if child_data.enabled else Qt.CheckState.Unchecked
+                )
+                self._style_entry_item(child_item, child_data)
+            elif isinstance(child_data, Category):
+                self._sync_children_checkboxes(child_item, checked)
+
+    def _deferred_rebuild(self):
+        """Rebuild the tree after the current event is fully processed."""
+        self.tree.blockSignals(True)
+        self._updating_tree = True
+        self._populate_tree()
+        self._updating_tree = False
+        self.tree.blockSignals(False)
 
     def _set_category_enabled(self, cat: Category, enabled: bool):
         """Recursively enable/disable all entries in a category."""
@@ -2724,6 +3214,20 @@ class MainWindow(QMainWindow):
             set_custom_mono_font(mono_font)
             self._apply_stylesheet()
 
+    def _open_object_explorer(self):
+        """Open the Object Explorer window."""
+        from object_explorer import ObjectExplorerDialog
+        # Reuse existing window if it's still alive
+        if not hasattr(self, '_oe_window') or self._oe_window is None:
+            self._oe_window = ObjectExplorerDialog()
+        self._oe_window.show()
+        self._oe_window.raise_()
+        self._oe_window.activateWindow()
+        # If OE has a DB loaded, share it with the highlighter
+        if self._oe_window.explorer.db:
+            from hotfix_highlighter import set_datapack
+            set_datapack(self._oe_window.explorer.db)
+
     def _apply_stylesheet(self):
         """Rebuild and apply the stylesheet with current settings."""
         t = get_theme()
@@ -2816,7 +3320,16 @@ def main():
     # Set app-wide icon
     icon_path = _get_resource_path("openbl3cmm.ico")
     if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+        icon = QIcon(str(icon_path))
+        app.setWindowIcon(icon)
+    else:
+        # Try .png fallback or other locations
+        for name in ("openbl3cmm.ico", "openbl3cmm.png"):
+            p = Path(__file__).parent / name
+            if p.exists():
+                icon = QIcon(str(p))
+                app.setWindowIcon(icon)
+                break
 
     window = MainWindow()
     window.show()

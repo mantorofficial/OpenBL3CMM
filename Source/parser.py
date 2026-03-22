@@ -308,6 +308,39 @@ def _parse_body(lines: list[str], start: int, mod: ModFile):
             i += 1
             continue
 
+        # Check for disabled (commented-out) hotfix entry: #SparkPatchEntry,... or ##DISABLED## SparkPatchEntry,...
+        disabled_line = None
+        if line.startswith("#") and not line.startswith("##"):
+            # Single # prefix — check if the rest is a hotfix
+            inner = line[1:].strip()
+            if is_hotfix_line(inner):
+                disabled_line = inner
+        elif line.startswith("##DISABLED##"):
+            inner = line[len("##DISABLED##"):].strip()
+            if inner:
+                disabled_line = inner
+
+        if disabled_line is not None:
+            comment_text = "\n".join(pending_comments).strip()
+            raw_line = _maybe_convert_simple(disabled_line)
+
+            entry = HotfixEntry(
+                raw_line=raw_line,
+                comment=comment_text,
+                enabled=False,
+            )
+
+            target = current_sub or current_major
+            if target is None:
+                target = Category(name="General")
+                mod.root.add_child(target)
+                current_major = target
+
+            target.add_child(entry)
+            pending_comments.clear()
+            i += 1
+            continue
+
         # It's a comment line — collect it
         if line.startswith("#"):
             content = line.lstrip("#").strip()
