@@ -18,7 +18,7 @@ Download `OpenBL3CMM_Setup.exe` from the [releases page](https://github.com/mant
 ### 2. Set Up the Object Explorer (Optional but Recommended)
 The Object Explorer lets you browse all BL3 game objects. To use it:
 
-1. Download `bl3data.sqlite3` from the repo: **[bl3data.sqlite3](bl3data.sqlite3)**
+1. Download `bl3data.sqlite3` from the repo: **[bl3data.sqlite3](https://github.com/mantorofficial/OpenBL3CMM/releases/tag/Sql-datapack)**
 2. Place it in: `%LOCALAPPDATA%\Programs\OpenBL3CMM\datapacks\`
 3. Open the Object Explorer (Ctrl+E) — it auto-detects the datapack
 
@@ -36,7 +36,7 @@ The Object Explorer lets you browse all BL3 game objects. To use it:
 |------|-------------|
 | [OpenBL3CMM_Setup.exe](https://github.com/mantorofficial/OpenBL3CMM/releases) | Windows installer (from Releases) |
 | [Template_Mod.blmod](Template_Mod.blmod) | Template mod file to get started |
-| [bl3data.sqlite3](bl3data.sqlite3) | BL3 Object Explorer datapack — place in `%LOCALAPPDATA%\Programs\OpenBL3CMM\datapacks\` |
+| [bl3data.sqlite3](https://github.com/mantorofficial/OpenBL3CMM/releases/tag/Sql-datapack) | BL3 Object Explorer datapack — place in `%LOCALAPPDATA%\Programs\OpenBL3CMM\datapacks\` |
 
 ## Features
 
