@@ -2124,7 +2124,8 @@ TUTORIAL_PAGES = [
             "Disabled entries are commented out in the file (prefixed with #).\n\n"
             "Entries are color-coded by command type:\n"
             "  Blue = set  |  Green = edit  |  Cyan = early_set\n"
-            "  Purple = merge  |  Yellow = clone  |  Pink = delete\n\n"
+            "  Purple = merge  |  Yellow = clone  |  Pink = delete\n"
+            "  Red = Incorrect Command Syntax\n\n"
             "You can customize colors in  Preferences → Command Color Coding."
         ),
     },
