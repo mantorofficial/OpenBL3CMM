@@ -220,3 +220,4 @@ Template_Mod.blmod     — Template mod file
 ## License
 
 OpenBL3CMM is licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html).
+A copy can be found at [License.txt](License.txt).
