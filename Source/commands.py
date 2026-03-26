@@ -126,7 +126,20 @@ def spark_to_simple(spark_line: str) -> str | None:
         parts = [cmd, obj, row_name, value]
         return " ".join(p for p in parts if p)
 
-    if hotfix_type_num != 1:
+    # Type 6 (mesh/level placement): object,mesh_path,mesh_name,index,value
+    if hotfix_type_num == 6:
+        # Show as: set_mesh (params) object mesh_path mesh_name value
+        fields = rest.split(",", 5)
+        obj = fields[0] if len(fields) > 0 else ""
+        mesh_path = fields[1] if len(fields) > 1 else ""
+        mesh_name = fields[2] if len(fields) > 2 else ""
+        # Remaining fields are index and value (possibly quoted with commas)
+        remaining = ",".join(fields[3:]) if len(fields) > 3 else ""
+        parts = ["set_mesh", params, obj, mesh_path, mesh_name, remaining]
+        return " ".join(p for p in parts if p)
+
+    if hotfix_type_num not in (1,):
+        # Unknown type — show as raw with a prefix
         return None
 
     # Type 1 layout: object,attribute,from_length,from_value,to_value
@@ -580,6 +593,42 @@ def _cmd_edit_dt(args: str) -> str | None:
     return f"SparkLevelPatchEntry,(1,2,0,MatchAll),{obj},{row},{col},0,,{value}"
 
 
+def _cmd_set_mesh(args: str) -> str | None:
+    """set_mesh (params) <map_object> <mesh_path> <mesh_name> <index>,<value>
+    Type 6 mesh/level placement hotfix.
+    """
+    rest = args.strip()
+    # Extract params
+    if not rest.startswith("("):
+        return None
+    close = rest.find(")")
+    if close < 0:
+        return None
+    params = rest[:close + 1]
+    rest = rest[close + 1:].strip()
+
+    # Split remaining: object mesh_path mesh_name remaining
+    parts = rest.split(None, 3)
+    if len(parts) < 3:
+        return None
+    obj = parts[0]
+    mesh_path = parts[1]
+    mesh_name = parts[2]
+    remaining = parts[3] if len(parts) > 3 else ""
+
+    # Extract the hotfix type from params to get the Spark type
+    inner = params.strip("()")
+    param_parts = inner.split(",")
+    level_target = param_parts[3] if len(param_parts) > 3 else ""
+
+    if level_target:
+        spark_type = "SparkLevelPatchEntry"
+    else:
+        spark_type = "SparkPatchEntry"
+
+    return f"{spark_type},{params},{obj},{mesh_path},{mesh_name},{remaining}"
+
+
 def _auto_detect_dt_column(table_path: str, row_name: str) -> str:
     """Auto-detect the column name for a DataTable row from the datapack."""
     try:
@@ -653,6 +702,7 @@ COMMAND_MAP = {
 _INTERNAL_COMMANDS = {
     "set_dt":     _cmd_set_dt,
     "edit_dt":    _cmd_edit_dt,
+    "set_mesh":   _cmd_set_mesh,
 }
 
 SIMPLE_COMMANDS = list(COMMAND_MAP.keys())

@@ -38,6 +38,7 @@ class HotfixEntry:
     object_path: str = ""   # /Game/... object path
     attribute: str = ""     # property name
     remainder: str = ""     # everything after attribute
+    _original_cmd: str = "" # original simple command name (clone, delete, etc.)
 
     def __post_init__(self):
         self._parse()
@@ -110,6 +111,8 @@ class HotfixEntry:
     @property
     def simple_type(self) -> str:
         """Return the simple command name (set, edit, merge, etc.) or the Spark type."""
+        if self._original_cmd:
+            return self._original_cmd
         try:
             from commands import spark_to_simple
             result = spark_to_simple(self.raw_line)
@@ -121,17 +124,8 @@ class HotfixEntry:
 
     @property
     def display_name(self) -> str:
-        """Short display name for the tree view."""
-        if self.comment:
-            # Use the comment as the display name
-            return self.comment.lstrip("# ").strip()
-        if self.hotfix_type == "InjectNewsItem":
-            return f"[News] {self.remainder.split(',')[0]}"
-        # Use last part of object path + attribute
-        obj_short = self.object_path.rsplit("/", 1)[-1] if self.object_path else ""
-        if self.attribute:
-            return f"{obj_short}.{self.attribute}"
-        return obj_short or self.raw_line[:80]
+        """Short display name for the tree view — shows the simple command form."""
+        return self.simple_form or self.raw_line[:120]
 
 
 @dataclass

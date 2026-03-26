@@ -25,7 +25,7 @@ from PySide6.QtGui import (
 VALID_COMMANDS = {
     "set", "set_cmp", "clone", "delete", "create", "set_array",
     "add", "remove", "set_if", "set_struct", "edit", "early_set",
-    "news", "exec", "rename", "merge",
+    "news", "exec", "rename", "merge", "set_dt", "edit_dt", "set_mesh",
 }
 
 # Known Spark types
@@ -51,12 +51,27 @@ def get_datapack():
 
 
 def path_exists(path: str) -> bool:
-    """Check if an object path exists in the datapack."""
+    """Check if an object path exists in the datapack.
+    Handles patterns like /Game/Path/Object.Object or /Game/Path/Object.Object:SubObject
+    by checking the base path before the dot.
+    """
     db = _datapack_db
     if not db:
         return False
+    # Direct match
     obj = db.get_object(path)
-    return obj is not None
+    if obj is not None:
+        return True
+    # Strip .Object suffix (e.g. Part_PS_JAK_Barrel_Maggie.Part_PS_JAK_Barrel_Maggie)
+    # Also handles Object.Object_C:SubObject
+    base = path.split(".")[0] if "." in path else path
+    # Strip :SubObject
+    base = base.split(":")[0] if ":" in base else base
+    if base != path:
+        obj = db.get_object(base)
+        if obj is not None:
+            return True
+    return False
 
 
 def find_property_in_object(obj_path: str, prop_name: str) -> bool:
@@ -305,38 +320,8 @@ def _validate_simple(text: str) -> list[str]:
             return problems
         rest = rest[close + 1:].strip()
 
-    args = rest.split()
-    if not args:
+    if not rest:
         problems.append("Missing object path")
-        return problems
-
-    obj_path = args[0]
-    # Short-form paths (without /) are valid — game resolves them
-
-    # Command-specific validation
-    if cmd in ("set", "set_cmp", "set_array", "set_struct", "set_if"):
-        if len(args) < 2:
-            problems.append("Missing property name")
-        if len(args) < 3:
-            problems.append("Missing value")
-    elif cmd in ("edit", "early_set"):
-        if len(args) < 2:
-            problems.append("Missing property name")
-    elif cmd in ("clone", "delete"):
-        pass  # Just need object path
-    elif cmd == "news":
-        if len(args) < 1:
-            problems.append("Missing news text")
-    elif cmd == "add" or cmd == "remove":
-        if len(args) < 2:
-            problems.append("Missing property name")
-        if len(args) < 3:
-            problems.append("Missing value")
-
-    # Check against datapack
-    if _datapack_db and obj_path.startswith("/"):
-        if not path_exists(obj_path):
-            problems.append(f"Object path not found in datapack: {obj_path}")
 
     return problems
 
@@ -351,7 +336,7 @@ def _validate_spark(text: str) -> list[str]:
             problems.append("Missing news item content")
         return problems
 
-    # Parse: Type,(params),object,attribute,dtkey,index,,value
+    # Parse: Type,(params),fields...
     m = re.match(r'(\w+),(\([^)]*\)),(.+)', text)
     if not m:
         problems.append("Invalid Spark format — expected: Type,(params),object,attribute,...")
@@ -362,22 +347,7 @@ def _validate_spark(text: str) -> list[str]:
         problems.append(f"Unknown Spark type: '{spark_type}'")
 
     fields = m.group(3).split(",")
-    # fields: object, attribute, dtkey, index, (empty), value
-
     if not fields or not fields[0].strip():
         problems.append("Missing object path")
-    else:
-        obj_path = fields[0].strip()
-        if obj_path.startswith("/") and _datapack_db and not path_exists(obj_path):
-            problems.append(f"Object path not found in datapack: {obj_path}")
-
-    if len(fields) < 2 or not fields[1].strip():
-        problems.append("Missing attribute/property name")
-
-    # Value should be present (after the empty field)
-    if len(fields) >= 6:
-        value = fields[-1].strip() if fields[-1].strip() else None
-        if not value:
-            problems.append("Missing value")
 
     return problems

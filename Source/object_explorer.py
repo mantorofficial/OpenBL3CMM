@@ -454,8 +454,9 @@ class ObjectExplorerWidget(QWidget):
 
         # Left: object tree
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Class"])
-        self.tree.setColumnWidth(0, 400)
+        self.tree.setHeaderLabels(["Name"])
+        self.tree.header().setVisible(False)
+        self.tree.setColumnWidth(0, 500)
         self.tree.setAlternatingRowColors(False)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tree.itemExpanded.connect(self._on_item_expanded)
@@ -846,7 +847,6 @@ class ObjectExplorerWidget(QWidget):
             item = QTreeWidgetItem()
             name = path.strip("/")
             item.setText(0, name)
-            item.setText(1, "")
             item.setData(0, Qt.ItemDataRole.UserRole, path)
             item.setData(0, Qt.ItemDataRole.UserRole + 1, True)  # is_folder
             item.setChildIndicatorPolicy(
@@ -858,7 +858,6 @@ class ObjectExplorerWidget(QWidget):
         """Create a tree item from child data dict."""
         item = QTreeWidgetItem()
         item.setText(0, child_data["name"])
-        item.setText(1, child_data.get("class_name", ""))
         item.setData(0, Qt.ItemDataRole.UserRole, child_data["path"])
         item.setData(0, Qt.ItemDataRole.UserRole + 1, child_data.get("is_folder", False))
 
@@ -922,24 +921,33 @@ class ObjectExplorerWidget(QWidget):
         """Navigate the tree to a specific object path and show its details."""
         self.path_label.setText(path)
 
-        # Track history
-        if not self._navigating_history:
-            # Trim forward history
-            if self._history_idx < len(self._history) - 1:
-                self._history = self._history[:self._history_idx + 1]
-            self._history.append(path)
-            self._history_idx = len(self._history) - 1
-            self._update_nav_buttons()
+        # Track history on the active tab
+        tab_dialog = getattr(self, '_tab_dialog', None)
+        if tab_dialog:
+            widget = tab_dialog.prop_tabs.widget(tab_dialog.prop_tabs.currentIndex())
+            if widget and hasattr(widget, '_history'):
+                if not self._navigating_history:
+                    if widget._history_idx < len(widget._history) - 1:
+                        widget._history = widget._history[:widget._history_idx + 1]
+                    widget._history.append(path)
+                    widget._history_idx = len(widget._history) - 1
+                    self._update_nav_buttons()
 
         if self.db:
             self._show_object_details(path)
 
     def _go_back(self):
-        """Navigate back in history."""
-        if self._history_idx > 0:
-            self._history_idx -= 1
+        """Navigate back in history for the active tab."""
+        tab_dialog = getattr(self, '_tab_dialog', None)
+        if not tab_dialog:
+            return
+        widget = tab_dialog.prop_tabs.widget(tab_dialog.prop_tabs.currentIndex())
+        if not widget or not hasattr(widget, '_history'):
+            return
+        if widget._history_idx > 0:
+            widget._history_idx -= 1
             self._navigating_history = True
-            path = self._history[self._history_idx]
+            path = widget._history[widget._history_idx]
             self.path_label.setText(path)
             if self.db:
                 self._show_object_details(path)
@@ -947,11 +955,17 @@ class ObjectExplorerWidget(QWidget):
             self._update_nav_buttons()
 
     def _go_forward(self):
-        """Navigate forward in history."""
-        if self._history_idx < len(self._history) - 1:
-            self._history_idx += 1
+        """Navigate forward in history for the active tab."""
+        tab_dialog = getattr(self, '_tab_dialog', None)
+        if not tab_dialog:
+            return
+        widget = tab_dialog.prop_tabs.widget(tab_dialog.prop_tabs.currentIndex())
+        if not widget or not hasattr(widget, '_history'):
+            return
+        if widget._history_idx < len(widget._history) - 1:
+            widget._history_idx += 1
             self._navigating_history = True
-            path = self._history[self._history_idx]
+            path = widget._history[widget._history_idx]
             self.path_label.setText(path)
             if self.db:
                 self._show_object_details(path)
@@ -959,9 +973,19 @@ class ObjectExplorerWidget(QWidget):
             self._update_nav_buttons()
 
     def _update_nav_buttons(self):
-        """Enable/disable back/forward buttons based on history."""
-        self.btn_back.setEnabled(self._history_idx > 0)
-        self.btn_forward.setEnabled(self._history_idx < len(self._history) - 1)
+        """Enable/disable back/forward buttons based on active tab's history."""
+        tab_dialog = getattr(self, '_tab_dialog', None)
+        if not tab_dialog:
+            self.btn_back.setEnabled(False)
+            self.btn_forward.setEnabled(False)
+            return
+        widget = tab_dialog.prop_tabs.widget(tab_dialog.prop_tabs.currentIndex())
+        if not widget or not hasattr(widget, '_history'):
+            self.btn_back.setEnabled(False)
+            self.btn_forward.setEnabled(False)
+            return
+        self.btn_back.setEnabled(widget._history_idx > 0)
+        self.btn_forward.setEnabled(widget._history_idx < len(widget._history) - 1)
 
     def _zoom_in(self):
         self._prop_font_size = min(24, self._prop_font_size + 1)
@@ -1337,7 +1361,6 @@ class ObjectExplorerWidget(QWidget):
         for r in results:
             item = QTreeWidgetItem()
             item.setText(0, r["path"])
-            item.setText(1, r.get("class_name", ""))
             item.setData(0, Qt.ItemDataRole.UserRole, r["path"])
             item.setData(0, Qt.ItemDataRole.UserRole + 1, False)
             self.tree.addTopLevelItem(item)
@@ -1532,10 +1555,20 @@ class ObjectExplorerDialog(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Add menu bar
+        from PySide6.QtWidgets import QMenuBar
+        menu_bar = QMenuBar(self)
+        layout.setMenuBar(menu_bar)
+
+        prefs_menu = menu_bar.addMenu("&Preferences")
+        act_shortcuts = prefs_menu.addAction("Keyboard Shortcuts...")
+        act_shortcuts.triggered.connect(lambda: self.explorer._show_shortcuts_help())
+
         self.explorer = ObjectExplorerWidget(self)
         layout.addWidget(self.explorer)
 
         self._setup_tabbed_properties()
+        self.explorer._tab_dialog = self
         self.explorer.tree.viewport().installEventFilter(self)
 
     def _setup_tabbed_properties(self):
@@ -1546,6 +1579,7 @@ class ObjectExplorerDialog(QWidget):
         self.prop_tabs.setMovable(True)
         self.prop_tabs.tabCloseRequested.connect(self._close_prop_tab)
         self.prop_tabs.tabBarClicked.connect(self._on_tab_clicked)
+        self.prop_tabs.currentChanged.connect(self._on_tab_changed)
 
         # Move original prop_view into first tab wrapped in container
         exp.tabs.removeTab(0)
@@ -1575,6 +1609,16 @@ class ObjectExplorerDialog(QWidget):
 
         if cur_idx == self._plus_idx:
             return
+
+        # Ensure this path is in the tab's history (fallback if _navigate_to missed it)
+        if cur_widget and hasattr(cur_widget, '_history'):
+            if not cur_widget._history or cur_widget._history[cur_widget._history_idx] != path:
+                if not self.explorer._navigating_history:
+                    if cur_widget._history_idx < len(cur_widget._history) - 1:
+                        cur_widget._history = cur_widget._history[:cur_widget._history_idx + 1]
+                    cur_widget._history.append(path)
+                    cur_widget._history_idx = len(cur_widget._history) - 1
+                    self.explorer._update_nav_buttons()
 
         # Load into whatever tab is active (including the first/main one)
         self._load_into_view(cur_widget, path)
@@ -1634,6 +1678,36 @@ class ObjectExplorerDialog(QWidget):
             self._plus_idx = self.prop_tabs.count() - 1
             self.prop_tabs.setCurrentIndex(new_idx)
 
+    def _on_tab_changed(self, index):
+        """Update the path label to show the current tab's path."""
+        if index < 0 or not hasattr(self, '_plus_idx') or index == self._plus_idx:
+            return
+        widget = self.prop_tabs.widget(index)
+        if widget and hasattr(widget, '_current_path'):
+            path = widget._current_path
+            self.explorer.path_label.setText(path if path else "")
+            # Update nav buttons for this tab's history
+            self.explorer._update_nav_buttons()
+            # Also update references panel for the active tab
+            if path and self.explorer.db:
+                self.explorer.refs_from.clear()
+                self.explorer.refs_to.clear()
+                refs_from = set(self.explorer.db.get_references_from(path))
+                refs_to = set(self.explorer.db.get_references_to(path))
+                if self.explorer._refs_db:
+                    refs_from.update(self.explorer._refs_db.get_references_from(path))
+                    refs_to.update(self.explorer._refs_db.get_references_to(path))
+                for ref in sorted(refs_from):
+                    ref_item = QTreeWidgetItem()
+                    ref_item.setText(0, ref)
+                    ref_item.setData(0, Qt.ItemDataRole.UserRole, ref)
+                    self.explorer.refs_from.addTopLevelItem(ref_item)
+                for ref in sorted(refs_to):
+                    ref_item = QTreeWidgetItem()
+                    ref_item.setText(0, ref)
+                    ref_item.setData(0, Qt.ItemDataRole.UserRole, ref)
+                    self.explorer.refs_to.addTopLevelItem(ref_item)
+
     def _make_container_for_existing(self, existing_browser):
         """Wrap an existing QTextBrowser in a container with clipboard buttons."""
         container = QWidget()
@@ -1681,6 +1755,8 @@ class ObjectExplorerDialog(QWidget):
         container._browser = existing_browser
         container._saved_list = saved_list
         container._current_path = ""
+        container._history = []
+        container._history_idx = -1
 
         return container
 
@@ -1736,16 +1812,17 @@ class ObjectExplorerDialog(QWidget):
 
         vlayout.addWidget(saved_widget)
 
-        # Store refs on the container for later access
         container._browser = browser
         container._saved_list = saved_list
         container._current_path = ""
+        container._history = []
+        container._history_idx = -1
 
         return container
 
     def _save_to_clipboard(self, container):
         """Save the current object path to this tab's clipboard."""
-        path = self.explorer.path_label.text()
+        path = getattr(container, '_current_path', '')
         if not path:
             return
         saved_list = container._saved_list
@@ -1850,23 +1927,26 @@ class ObjectExplorerDialog(QWidget):
 
     def _navigate_in_tab(self, tab_idx, path):
         """Navigate to an object within a specific tab."""
-        self.explorer.path_label.setText(path)
+        # Only update path label if this is the active tab
+        if self.prop_tabs.currentIndex() == tab_idx:
+            self.explorer.path_label.setText(path)
 
-        # Add to history
-        if not self.explorer._navigating_history:
-            if self.explorer._history_idx < len(self.explorer._history) - 1:
-                self.explorer._history = self.explorer._history[:self.explorer._history_idx + 1]
-            self.explorer._history.append(path)
-            self.explorer._history_idx = len(self.explorer._history) - 1
-            self.explorer._update_nav_buttons()
-
+        # Add to this tab's history
         widget = self.prop_tabs.widget(tab_idx)
+        if widget and hasattr(widget, '_history') and not self.explorer._navigating_history:
+            if widget._history_idx < len(widget._history) - 1:
+                widget._history = widget._history[:widget._history_idx + 1]
+            widget._history.append(path)
+            widget._history_idx = len(widget._history) - 1
+            if self.prop_tabs.currentIndex() == tab_idx:
+                self.explorer._update_nav_buttons()
+
         self._load_into_view(widget, path)
         short_name = path.rsplit("/", 1)[-1] if "/" in path else path
         self.prop_tabs.setTabText(tab_idx, short_name)
 
-        # Also update references
-        if self.explorer.db:
+        # Only update references if this is the active tab
+        if self.prop_tabs.currentIndex() == tab_idx and self.explorer.db:
             self.explorer.refs_from.clear()
             self.explorer.refs_to.clear()
             refs_from = set()
@@ -1890,10 +1970,14 @@ class ObjectExplorerDialog(QWidget):
     def _open_in_new_tab(self, path):
         view = self._make_browser()
         self._load_into_view(view, path)
+        # Add the initial path to the new tab's history
+        view._history = [path]
+        view._history_idx = 0
         short_name = path.rsplit("/", 1)[-1] if "/" in path else path
         idx = self.prop_tabs.insertTab(self._plus_idx, view, short_name)
         self._plus_idx = self.prop_tabs.count() - 1
         self.prop_tabs.setCurrentIndex(idx)
+        # setCurrentIndex triggers _on_tab_changed which updates path label
 
     def _close_prop_tab(self, index):
         if index == self._plus_idx:

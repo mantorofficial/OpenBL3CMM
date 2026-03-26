@@ -106,42 +106,45 @@ def _parse_category(data: dict, parent: Category):
     cat = Category(name=name, mutually_exclusive=mut)
     parent.add_child(cat)
 
+    pending_comment = ""
     for item in data.get("contains", []):
-        _parse_content_item(item, cat)
+        if not isinstance(item, dict):
+            continue
 
+        if "comment" in item:
+            # Collect comment — attach to the next entry
+            comment_text = str(item["comment"])
+            if pending_comment:
+                pending_comment += "\n" + comment_text
+            else:
+                pending_comment = comment_text
+            continue
 
-def _parse_content_item(item: dict, parent: Category):
-    """Parse a single content item (command, comment, or subcategory)."""
-    if not isinstance(item, dict):
-        return
+        if "category" in item:
+            _parse_category(item, cat)
+            pending_comment = ""
 
-    if "category" in item:
-        _parse_category(item, parent)
+        elif "enabled" in item:
+            cmd = item["enabled"]
+            if isinstance(cmd, str):
+                lines = [l.strip() for l in cmd.strip().splitlines() if l.strip()]
+                for j, line in enumerate(lines):
+                    comment = pending_comment if j == 0 else ""
+                    parent_entry = HotfixEntry(raw_line=line, comment=comment, enabled=True)
+                    cat.add_child(parent_entry)
+                pending_comment = ""
 
-    elif "enabled" in item:
-        cmd = item["enabled"]
-        if isinstance(cmd, str):
-            # Could be multiline — each line is a separate command
-            for line in cmd.strip().splitlines():
-                line = line.strip()
-                if line:
-                    parent.add_child(HotfixEntry(raw_line=line, enabled=True))
-
-    elif "disabled" in item:
-        cmd = item["disabled"]
-        if isinstance(cmd, str):
-            parent.add_child(HotfixEntry(raw_line=cmd.strip(), enabled=False))
-        elif isinstance(cmd, list):
-            for line in cmd:
-                if isinstance(line, str) and line.strip():
-                    parent.add_child(HotfixEntry(raw_line=line.strip(), enabled=False))
-
-    elif "comment" in item:
-        # Store comments as disabled entries with the comment text
-        comment_text = str(item["comment"])
-        # We don't add standalone comments as entries — they're informational
-        # But we could attach them to the next entry if needed
-        pass
+        elif "disabled" in item:
+            cmd = item["disabled"]
+            if isinstance(cmd, str):
+                cat.add_child(HotfixEntry(raw_line=cmd.strip(), comment=pending_comment, enabled=False))
+                pending_comment = ""
+            elif isinstance(cmd, list):
+                for j, line in enumerate(cmd):
+                    if isinstance(line, str) and line.strip():
+                        comment = pending_comment if j == 0 else ""
+                        cat.add_child(HotfixEntry(raw_line=line.strip(), comment=comment, enabled=False))
+                pending_comment = ""
 
 
 # ──────────────────────────────────────────────

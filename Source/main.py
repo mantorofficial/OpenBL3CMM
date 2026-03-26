@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QLabel, QLineEdit, QFileDialog, QMessageBox, QDialog,
     QFormLayout, QDialogButtonBox, QComboBox, QPushButton, QGroupBox,
     QCheckBox, QInputDialog, QHeaderView, QAbstractItemView, QFrame,
+    QScrollArea, QStyle,
 )
 
 from models import ModFile, Category, HotfixEntry
@@ -35,11 +36,25 @@ from commands import simple_to_spark, spark_to_simple, SIMPLE_COMMANDS, COMMAND_
 # ──────────────────────────────────────────────
 
 APP_NAME = "OpenBL3CMM"
-APP_VERSION = "0.1.0"
+APP_VERSION = "Beta-1.0"
+GITHUB_REPO = "mantorofficial/OpenBL3CMM"
 
 # Settings keys
 SETTINGS_ORG = "OpenBL3CMM"
 SETTINGS_APP = "BL3"
+
+
+def get_appdata_dir() -> Path:
+    """Get the AppData folder for OpenBL3CMM. Creates it if needed."""
+    if sys.platform == "win32":
+        base = Path.home() / "AppData" / "Roaming" / "OpenBL3CMM"
+    else:
+        base = Path.home() / ".openbl3cmm"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "backups").mkdir(exist_ok=True)
+    (base / "datapacks").mkdir(exist_ok=True)
+    (base / "mods").mkdir(exist_ok=True)
+    return base
 
 # ── Theme system ──
 # Each theme is a dict of color tokens. Users can pick one or define their own.
@@ -565,6 +580,29 @@ COLOR_CATEGORY = _t["category"]
 COLOR_SELECTION = _t["selection"]
 COLOR_BORDER = _t["border"]
 COLOR_HOVER = _t["hover"]
+
+# Command-type entry colors — each command type gets its own color
+COMMAND_TYPE_COLORS = {
+    "set":       "#7cb3ff",  # Blue
+    "set_dt":    "#7cb3ff",  # Blue (same as set)
+    "edit":      "#a6e3a1",  # Green
+    "edit_dt":   "#a6e3a1",  # Green (same as edit)
+    "early_set": "#89dceb",  # Cyan
+    "merge":     "#cba6f7",  # Purple
+    "news":      "#fab387",  # Orange
+    "clone":     "#f8a715",  # Yellow/gold (unique)
+    "delete":    "#f38ba8",  # Pink
+    "create":    "#94e2d5",  # Teal
+    "set_cmp":   "#7cb3ff",  # Blue (set family)
+    "set_array": "#7cb3ff",  # Blue (set family)
+    "set_struct":"#7cb3ff",  # Blue (set family)
+    "set_if":    "#7cb3ff",  # Blue (set family)
+    "add":       "#a6e3a1",  # Green
+    "remove":    "#f38ba8",  # Pink
+    "exec":      "#eba0ac",  # Maroon-pink
+    "rename":    "#fab387",  # Orange
+    "set_mesh":  "#f9e2af",  # Soft yellow
+}
 
 
 # ──────────────────────────────────────────────
@@ -1245,9 +1283,11 @@ class NewEntryDialog(QDialog):
 
     def get_entry(self) -> HotfixEntry | None:
         comment = self.comment_edit.text().strip()
+        original_cmd = ""
 
         if self.mode_simple.isChecked():
             cmd = self.cmd_combo.currentText()
+            original_cmd = cmd.lower()
             args = self.simple_edit.text().strip()
             if not args:
                 return None
@@ -1278,16 +1318,19 @@ class NewEntryDialog(QDialog):
             raw = re.sub(r'\(\s+', '(', raw)
             raw = re.sub(r'\s+\)', ')', raw)
             raw = re.sub(r',\s+', ',', raw)
-            # Only convert if it's not already Spark format
-            spark_types = ("SparkPatchEntry", "SparkLevelPatchEntry",
-                           "SparkCharacterLoadedEntry", "SparkEarlyLevelPatchEntry",
-                           "InjectNewsItem")
-            if not any(raw.startswith(st) for st in spark_types):
+            # Detect original command from the text
+            first_word = raw.split()[0].lower() if raw.split() else ""
+            is_spark = first_word.startswith("spark") or first_word.startswith("inject")
+            if not is_spark:
+                original_cmd = first_word
                 converted = simple_to_spark(raw)
                 if converted:
                     raw = converted
 
-        return HotfixEntry(raw_line=raw, comment=comment, enabled=True)
+        entry = HotfixEntry(raw_line=raw, comment=comment, enabled=True)
+        if original_cmd:
+            entry._original_cmd = original_cmd
+        return entry
 
 
 # ──────────────────────────────────────────────
@@ -1594,6 +1637,372 @@ def set_custom_mono_font(font: str):
     s.setValue("custom_mono_font", font)
 
 
+# Default keyboard shortcuts
+DEFAULT_KEY_SHORTCUTS = {
+    "New File": "Ctrl+N",
+    "Open File": "Ctrl+O",
+    "Save": "Ctrl+S",
+    "Save As": "Ctrl+Shift+S",
+    "Add Category": "Ctrl+H",
+    "Add Entry": "Insert",
+    "Enable Selected": "Ctrl+B",
+    "Disable Selected": "Ctrl+D",
+    "Copy": "Ctrl+C",
+    "Cut": "Ctrl+X",
+    "Paste": "Ctrl+V",
+    "Rename": "Ctrl+R",
+    "Delete": "Delete",
+    "Zoom In": "Ctrl+=",
+    "Zoom Out": "Ctrl+-",
+    "Reset Zoom": "Ctrl+0",
+    "Object Explorer": "Ctrl+E",
+}
+
+def get_shortcuts() -> dict[str, str]:
+    s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    shortcuts = {}
+    for name, default in DEFAULT_KEY_SHORTCUTS.items():
+        shortcuts[name] = s.value(f"shortcut/{name}", default)
+    return shortcuts
+
+def set_shortcut(name: str, key: str):
+    s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    s.setValue(f"shortcut/{name}", key)
+
+
+class ShortcutKeyEdit(QLineEdit):
+    """A line edit that captures key sequences, mouse buttons, and wheel.
+    Click the field to start listening, press Escape to cancel."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._listening = False
+        self.setReadOnly(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_look()
+
+    def _update_look(self):
+        if self._listening:
+            self.setStyleSheet("border: 2px solid #f8a715; background-color: rgba(248,167,21,0.15);")
+            self.setPlaceholderText("Press a key, click, or scroll...")
+        else:
+            self.setStyleSheet("")
+            self.setPlaceholderText("")
+
+    def _start_listening(self):
+        self._listening = True
+        self._update_look()
+        self.grabKeyboard()
+        self.grabMouse()
+
+    def _stop_listening(self):
+        self._listening = False
+        self._update_look()
+        self.releaseKeyboard()
+        self.releaseMouse()
+
+    def _mod_parts(self, mods):
+        from PySide6.QtCore import Qt as QtCore_Qt
+        parts = []
+        if mods & QtCore_Qt.KeyboardModifier.ControlModifier:
+            parts.append("Ctrl")
+        if mods & QtCore_Qt.KeyboardModifier.ShiftModifier:
+            parts.append("Shift")
+        if mods & QtCore_Qt.KeyboardModifier.AltModifier:
+            parts.append("Alt")
+        return parts
+
+    def mousePressEvent(self, event):
+        from PySide6.QtCore import Qt as QtCore_Qt
+        if not self._listening:
+            self._start_listening()
+            return
+
+        parts = self._mod_parts(event.modifiers())
+        btn = event.button()
+        btn_names = {
+            QtCore_Qt.MouseButton.LeftButton: "LeftClick",
+            QtCore_Qt.MouseButton.RightButton: "RightClick",
+            QtCore_Qt.MouseButton.MiddleButton: "MiddleClick",
+            QtCore_Qt.MouseButton.BackButton: "Mouse4",
+            QtCore_Qt.MouseButton.ForwardButton: "Mouse5",
+        }
+        btn_name = btn_names.get(btn, f"Mouse{int(btn)}")
+        parts.append(btn_name)
+        self.setText("+".join(parts))
+        self._stop_listening()
+
+    def keyPressEvent(self, event):
+        from PySide6.QtCore import Qt as QtCore_Qt
+        if not self._listening:
+            # Allow Enter/Space to start listening
+            if event.key() in (QtCore_Qt.Key.Key_Return, QtCore_Qt.Key.Key_Enter, QtCore_Qt.Key.Key_Space):
+                self._start_listening()
+            return
+
+        key = event.key()
+
+        # Escape cancels listening
+        if key == QtCore_Qt.Key.Key_Escape:
+            self._stop_listening()
+            return
+
+        # Ignore bare modifier keys
+        if key in (QtCore_Qt.Key.Key_Control, QtCore_Qt.Key.Key_Shift,
+                   QtCore_Qt.Key.Key_Alt, QtCore_Qt.Key.Key_Meta):
+            return
+
+        parts = self._mod_parts(event.modifiers())
+        key_seq = QKeySequence(key)
+        key_text = key_seq.toString()
+        if key_text:
+            parts.append(key_text)
+
+        self.setText("+".join(parts))
+        self._stop_listening()
+
+    def wheelEvent(self, event):
+        if not self._listening:
+            # Pass to parent so scroll area works
+            event.ignore()
+            return
+
+        parts = self._mod_parts(event.modifiers())
+        delta = event.angleDelta().y()
+        if delta > 0:
+            parts.append("WheelUp")
+        elif delta < 0:
+            parts.append("WheelDown")
+        else:
+            hdelta = event.angleDelta().x()
+            if hdelta > 0:
+                parts.append("WheelRight")
+            else:
+                parts.append("WheelLeft")
+
+        self.setText("+".join(parts))
+        self._stop_listening()
+
+    def focusOutEvent(self, event):
+        if self._listening:
+            self._stop_listening()
+        super().focusOutEvent(event)
+
+
+class ShortcutEditorDialog(QDialog):
+    """Dialog for editing keyboard shortcuts."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard Shortcuts")
+        self.resize(500, 500)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        self._edits: dict[str, ShortcutKeyEdit] = {}
+        shortcuts = get_shortcuts()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        form = QVBoxLayout(scroll_widget)
+        form.setSpacing(4)
+
+        for name, key in shortcuts.items():
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            label = QLabel(name)
+            label.setMinimumWidth(150)
+            edit = ShortcutKeyEdit()
+            edit.setText(key)
+            edit.setMinimumWidth(140)
+            reset_btn = QPushButton()
+            reset_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+            reset_btn.setToolTip("Reset to default")
+            reset_btn.setFixedWidth(30)
+            reset_btn.setFixedHeight(26)
+            default_key = DEFAULT_KEY_SHORTCUTS.get(name, "")
+            reset_btn.clicked.connect(lambda checked, e=edit, d=default_key: e.setText(d))
+            row.addWidget(label)
+            row.addWidget(edit, 1)
+            row.addWidget(reset_btn)
+            form.addLayout(row)
+            self._edits[name] = edit
+
+        form.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_reset_all = QPushButton("Reset All to Defaults")
+        btn_reset_all.clicked.connect(self._reset_all)
+        btn_layout.addWidget(btn_reset_all)
+        btn_layout.addStretch()
+        btn_ok = QPushButton("OK")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def _reset_all(self):
+        for name, edit in self._edits.items():
+            edit.setText(DEFAULT_KEY_SHORTCUTS.get(name, ""))
+
+    def get_shortcuts(self) -> dict[str, str]:
+        return {name: edit.text() for name, edit in self._edits.items()}
+
+
+# Default command type colors
+DEFAULT_COMMAND_COLORS = {
+    "set":       "#7cb3ff",
+    "set_dt":    "#7cb3ff",
+    "edit":      "#a6e3a1",
+    "edit_dt":   "#a6e3a1",
+    "early_set": "#89dceb",
+    "merge":     "#cba6f7",
+    "news":      "#fab387",
+    "clone":     "#f8a715",
+    "delete":    "#f38ba8",
+    "create":    "#94e2d5",
+    "set_cmp":   "#b4befe",
+    "set_array": "#7cb3ff",
+    "set_struct": "#7cb3ff",
+    "set_if":    "#7cb3ff",
+    "add":       "#a6e3a1",
+    "remove":    "#f38ba8",
+    "exec":      "#eba0ac",
+    "rename":    "#fab387",
+    "set_mesh":  "#f9e2af",
+}
+
+def get_command_colors() -> dict[str, str]:
+    s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    colors = {}
+    for cmd, default in DEFAULT_COMMAND_COLORS.items():
+        colors[cmd] = s.value(f"cmd_color/{cmd}", default)
+    return colors
+
+def set_command_color(cmd: str, color: str):
+    s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    s.setValue(f"cmd_color/{cmd}", color)
+
+
+class ColorButton(QPushButton):
+    """A button that shows a color and opens a color picker on click."""
+
+    def __init__(self, color: str = "#ffffff", parent=None):
+        super().__init__(parent)
+        self._color = color
+        self.setFixedSize(40, 26)
+        self._update_style()
+        self.clicked.connect(self._pick_color)
+
+    def _update_style(self):
+        self.setStyleSheet(
+            f"background-color: {self._color}; border: 1px solid #666; border-radius: 3px;"
+        )
+
+    def _pick_color(self):
+        from PySide6.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(QColor(self._color), self.parentWidget(), "Pick Color")
+        if color.isValid():
+            self._color = color.name()
+            self._update_style()
+
+    def color(self) -> str:
+        return self._color
+
+
+class ColorCodingDialog(QDialog):
+    """Dialog for customizing command type colors."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Command Color Coding")
+        self.resize(400, 500)
+
+        layout = QVBoxLayout(self)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        form = QVBoxLayout(scroll_widget)
+        form.setSpacing(4)
+
+        self._buttons: dict[str, ColorButton] = {}
+        colors = get_command_colors()
+
+        # Group related commands
+        groups = [
+            ("Set family", ["set", "set_dt", "set_array", "set_struct", "set_if", "set_cmp"]),
+            ("Edit family", ["edit", "edit_dt", "early_set"]),
+            ("Modify", ["add", "remove", "merge"]),
+            ("Object", ["clone", "delete", "create", "rename"]),
+            ("Other", ["news", "exec"]),
+        ]
+
+        for group_name, cmds in groups:
+            group_label = QLabel(f"— {group_name} —")
+            group_label.setStyleSheet("font-weight: bold; padding-top: 6px;")
+            form.addWidget(group_label)
+
+            for cmd in cmds:
+                if cmd not in colors:
+                    continue
+                row = QHBoxLayout()
+                row.setSpacing(8)
+                label = QLabel(cmd)
+                label.setMinimumWidth(100)
+                btn = ColorButton(colors[cmd])
+                reset_btn = QPushButton()
+                reset_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+                reset_btn.setToolTip("Reset to default")
+                reset_btn.setFixedWidth(30)
+                reset_btn.setFixedHeight(26)
+                default_color = DEFAULT_COMMAND_COLORS.get(cmd, "#ffffff")
+                reset_btn.clicked.connect(
+                    lambda checked, b=btn, d=default_color: (
+                        setattr(b, '_color', d), b._update_style()
+                    )
+                )
+                row.addWidget(label)
+                row.addStretch()
+                row.addWidget(btn)
+                row.addWidget(reset_btn)
+                form.addLayout(row)
+                self._buttons[cmd] = btn
+
+        form.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_reset_all = QPushButton("Reset All to Defaults")
+        btn_reset_all.clicked.connect(self._reset_all)
+        btn_layout.addWidget(btn_reset_all)
+        btn_layout.addStretch()
+        btn_ok = QPushButton("OK")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def _reset_all(self):
+        for cmd, btn in self._buttons.items():
+            btn._color = DEFAULT_COMMAND_COLORS.get(cmd, "#ffffff")
+            btn._update_style()
+
+    def get_colors(self) -> dict[str, str]:
+        return {cmd: btn.color() for cmd, btn in self._buttons.items()}
+
+
 class FontSettingsDialog(QDialog):
     """Dialog for configuring font family and sizes."""
 
@@ -1670,6 +2079,161 @@ class FontSettingsDialog(QDialog):
         )
 
 
+
+# ──────────────────────────────────────────────
+# Tutorial / Welcome Dialog
+# ──────────────────────────────────────────────
+
+TUTORIAL_PAGES = [
+    {
+        "title": "Welcome to OpenBL3CMM!",
+        "body": (
+            "OpenBL3CMM is a hotfix mod manager for Borderlands 3.\n\n"
+            "It lets you create, edit, and organize .bl3hotfix and .blmod files "
+            "that modify the game via hotfix injection (using OHL or B3HM).\n\n"
+            "This quick tutorial will walk you through the basics."
+        ),
+    },
+    {
+        "title": "Creating & Opening Files",
+        "body": (
+            "• File → New  creates a blank mod file\n"
+            "• File → Open  loads an existing .bl3hotfix or .blmod\n"
+            "• File → Save / Save As  exports your work\n\n"
+            "The app auto-saves a backup before each save, stored in:\n"
+            "  %APPDATA%/OpenBL3CMM/backups/"
+        ),
+    },
+    {
+        "title": "Categories & Entries",
+        "body": (
+            "Mods are organized into categories (folders) containing hotfix entries.\n\n"
+            "• Use the toolbar  + Category  to add a new category\n"
+            "• Use  + Entry  (or press Insert) to add a hotfix\n"
+            "• Entries can be written in Simple format:\n"
+            "    set /Game/Path/Object.Object Property Value\n"
+            "• Or pasted as raw Spark format:\n"
+            "    SparkPatchEntry,(1,1,0,),/Game/...\n\n"
+            "Drag and drop to reorder entries and categories."
+        ),
+    },
+    {
+        "title": "Enable / Disable & Color Coding",
+        "body": (
+            "Each entry has a checkbox to enable or disable it.\n"
+            "Disabled entries are commented out in the file (prefixed with #).\n\n"
+            "Entries are color-coded by command type:\n"
+            "  Blue = set  |  Green = edit  |  Cyan = early_set\n"
+            "  Purple = merge  |  Yellow = clone  |  Pink = delete\n\n"
+            "You can customize colors in  Preferences → Command Color Coding."
+        ),
+    },
+    {
+        "title": "Object Explorer",
+        "body": (
+            "Press Ctrl+E to open the Object Explorer — a searchable browser\n"
+            "of BL3 game objects from a datapack.\n\n"
+            "To generate a datapack, go to  Tools → Object Explorer,\n"
+            "then click Generate Datapack and point it at your BL3 data.\n\n"
+            "The explorer shows object properties, links, and lets you\n"
+            "copy paths directly into your hotfix entries."
+        ),
+    },
+    {
+        "title": "Tips & Shortcuts",
+        "body": (
+            "• Double-click an entry to edit it\n"
+            "• Ctrl+C / Ctrl+V to copy/paste entries\n"
+            "• Ctrl+B to enable, Ctrl+D to disable selected\n"
+            "• Ctrl+R to rename a category\n"
+            "• Right-click for context menu\n\n"
+            "Customize shortcuts in  Preferences → Keyboard Shortcuts.\n\n"
+            "You can view this tutorial again from  Help → Tutorial."
+        ),
+    },
+]
+
+
+class TutorialDialog(QDialog):
+    """Multi-page tutorial walkthrough."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("OpenBL3CMM Tutorial")
+        self.resize(520, 380)
+        self._page = 0
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self._title = QLabel()
+        self._title.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        layout.addWidget(self._title)
+
+        self._body = QLabel()
+        self._body.setWordWrap(True)
+        self._body.setStyleSheet("font-size: 10pt; line-height: 1.4;")
+        self._body.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self._body, 1)
+
+        # Page indicator
+        self._page_label = QLabel()
+        self._page_label.setStyleSheet("color: #888; font-size: 9pt;")
+        self._page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._page_label)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        self._skip_check = QCheckBox("Don't show on startup")
+        s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self._skip_check.setChecked(s.value("skip_tutorial", False, type=bool))
+        btn_layout.addWidget(self._skip_check)
+
+        btn_layout.addStretch()
+
+        self._btn_back = QPushButton("← Back")
+        self._btn_back.clicked.connect(self._go_back)
+        btn_layout.addWidget(self._btn_back)
+
+        self._btn_next = QPushButton("Next →")
+        self._btn_next.clicked.connect(self._go_next)
+        btn_layout.addWidget(self._btn_next)
+
+        self._btn_close = QPushButton("Close")
+        self._btn_close.clicked.connect(self._finish)
+        btn_layout.addWidget(self._btn_close)
+
+        layout.addLayout(btn_layout)
+
+        self._update_page()
+
+    def _update_page(self):
+        page = TUTORIAL_PAGES[self._page]
+        self._title.setText(page["title"])
+        self._body.setText(page["body"])
+        self._page_label.setText(f"Page {self._page + 1} of {len(TUTORIAL_PAGES)}")
+        self._btn_back.setEnabled(self._page > 0)
+        is_last = self._page == len(TUTORIAL_PAGES) - 1
+        self._btn_next.setVisible(not is_last)
+        self._btn_close.setVisible(is_last)
+
+    def _go_back(self):
+        if self._page > 0:
+            self._page -= 1
+            self._update_page()
+
+    def _go_next(self):
+        if self._page < len(TUTORIAL_PAGES) - 1:
+            self._page += 1
+            self._update_page()
+
+    def _finish(self):
+        s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        s.setValue("skip_tutorial", self._skip_check.isChecked())
+        self.accept()
+
+
 # ──────────────────────────────────────────────
 # Main Window
 # ──────────────────────────────────────────────
@@ -1700,6 +2264,41 @@ class DragDropTreeWidget(QTreeWidget):
             self.setCurrentItem(None)
             self.itemSelectionChanged.emit()
         super().mousePressEvent(event)
+
+    def wheelEvent(self, event):
+        """Check for custom wheel shortcuts before default scroll."""
+        mods = event.modifiers()
+        delta = event.angleDelta().y()
+
+        parts = []
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            parts.append("Ctrl")
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            parts.append("Shift")
+        if mods & Qt.KeyboardModifier.AltModifier:
+            parts.append("Alt")
+
+        if delta > 0:
+            parts.append("WheelUp")
+        elif delta < 0:
+            parts.append("WheelDown")
+
+        if parts:
+            combo = "+".join(parts)
+            shortcuts = get_shortcuts()
+            for name, key in shortcuts.items():
+                if key == combo:
+                    win = self.window()
+                    if name == "Zoom In" and hasattr(win, '_change_font_size'):
+                        win._change_font_size(1)
+                        event.accept()
+                        return
+                    elif name == "Zoom Out" and hasattr(win, '_change_font_size'):
+                        win._change_font_size(-1)
+                        event.accept()
+                        return
+
+        super().wheelEvent(event)
 
     def startDrag(self, supportedActions):
         """Capture data model refs before Qt starts the drag."""
@@ -1870,14 +2469,33 @@ class MainWindow(QMainWindow):
         self._updating_tree = False
         self._clipboard: list = []
         self._last_category: Category | None = None  # tracks last selected/highlighted category
+        self._open_dialogs: list = []  # prevent GC of non-modal dialogs
 
         self._build_menu()
         self._build_toolbar()
         self._build_ui()
         self._build_statusbar()
+        self._apply_shortcuts()
 
         # Try to reopen the last file, otherwise start blank
         self._auto_load_last_file()
+
+        # Show tutorial on first launch
+        s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        if not s.value("skip_tutorial", False, type=bool):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(500, self._show_tutorial)
+
+    def _make_independent(self, dlg: QDialog) -> QDialog:
+        """Configure a dialog as an independent, non-modal, parentless window."""
+        dlg.setParent(None)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.setWindowIcon(self.windowIcon())
+        # Track to prevent GC
+        self._open_dialogs.append(dlg)
+        dlg.destroyed.connect(lambda: self._open_dialogs.remove(dlg) if dlg in self._open_dialogs else None)
+        return dlg
 
     # ── Menu bar ──
 
@@ -1928,7 +2546,7 @@ class MainWindow(QMainWindow):
 
         act_add_entry = edit_menu.addAction("Add &Entry")
         act_add_entry.setShortcut("Insert")
-        act_add_entry.triggered.connect(self._add_entry_contextual)
+        act_add_entry.triggered.connect(self._insert_key_action)
 
         edit_menu.addSeparator()
 
@@ -1980,16 +2598,6 @@ class MainWindow(QMainWindow):
 
         view_menu.addSeparator()
 
-        theme_menu = view_menu.addMenu("&Theme")
-        current_theme = get_current_theme_name()
-        for theme_name in THEMES:
-            act = theme_menu.addAction(theme_name)
-            act.setCheckable(True)
-            act.setChecked(theme_name == current_theme)
-            act.triggered.connect(lambda checked, tn=theme_name: self._switch_theme(tn))
-
-        view_menu.addSeparator()
-
         act_zoom_in = view_menu.addAction("Zoom In")
         act_zoom_in.setShortcut("Ctrl+=")
         act_zoom_in.triggered.connect(lambda: self._change_font_size(1))
@@ -2002,10 +2610,35 @@ class MainWindow(QMainWindow):
         act_zoom_reset.setShortcut("Ctrl+0")
         act_zoom_reset.triggered.connect(lambda: self._set_font_size(10))
 
-        view_menu.addSeparator()
+        # Preferences
+        prefs_menu = mb.addMenu("&Preferences")
 
-        act_font = view_menu.addAction("Font && Size Settings...")
+        theme_menu = prefs_menu.addMenu("&Theme")
+        current_theme = get_current_theme_name()
+        for theme_name in THEMES:
+            act = theme_menu.addAction(theme_name)
+            act.setCheckable(True)
+            act.setChecked(theme_name == current_theme)
+            act.triggered.connect(lambda checked, tn=theme_name: self._switch_theme(tn))
+
+        act_font = prefs_menu.addAction("Font && Size Settings...")
         act_font.triggered.connect(self._open_font_settings)
+
+        prefs_menu.addSeparator()
+
+        self._act_detail_panel = prefs_menu.addAction("Show Detail Panel")
+        self._act_detail_panel.setCheckable(True)
+        s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        show_detail = s.value("show_detail_panel", False, type=bool)
+        self._act_detail_panel.setChecked(show_detail)
+        self._act_detail_panel.triggered.connect(self._toggle_detail_panel)
+
+        prefs_menu.addSeparator()
+        act_shortcuts = prefs_menu.addAction("Keyboard Shortcuts...")
+        act_shortcuts.triggered.connect(self._open_shortcut_editor)
+
+        act_colors = prefs_menu.addAction("Command Color Coding...")
+        act_colors.triggered.connect(self._open_color_editor)
 
         # Tools
         tools_menu = mb.addMenu("&Tools")
@@ -2015,6 +2648,9 @@ class MainWindow(QMainWindow):
 
         # Help
         help_menu = mb.addMenu("&Help")
+        act_tutorial = help_menu.addAction("&Tutorial")
+        act_tutorial.triggered.connect(self._show_tutorial)
+        help_menu.addSeparator()
         act_about = help_menu.addAction("&About")
         act_about.triggered.connect(self._show_about)
 
@@ -2053,9 +2689,9 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(4, 4, 4, 4)
 
         self.tree = DragDropTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Type"])
-        self.tree.setColumnWidth(0, 550)
-        self.tree.setColumnWidth(1, 160)
+        self.tree.setHeaderLabels(["Name"])
+        self.tree.header().setVisible(False)
+        self.tree.setColumnWidth(0, 700)
         self.tree.setAlternatingRowColors(False)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2070,9 +2706,9 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left)
 
         # Right: detail panel
-        right = QWidget()
-        right.setMaximumWidth(500)
-        right_layout = QVBoxLayout(right)
+        self._right_panel = QWidget()
+        self._right_panel.setMaximumWidth(500)
+        right_layout = QVBoxLayout(self._right_panel)
         right_layout.setContentsMargins(4, 4, 4, 4)
 
         self.detail_label = QLabel("Select an entry to view details")
@@ -2124,9 +2760,14 @@ class MainWindow(QMainWindow):
 
         right_layout.addLayout(btn_layout)
 
-        splitter.addWidget(right)
+        splitter.addWidget(self._right_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
+
+        # Hide detail panel by default (toggle via Preferences)
+        s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        if not s.value("show_detail_panel", False, type=bool):
+            self._right_panel.hide()
 
     # ── Status bar ──
 
@@ -2167,6 +2808,8 @@ class MainWindow(QMainWindow):
         for child in self.mod.root.children:
             if isinstance(child, Category):
                 self._add_category_to_tree(child, self.tree.invisibleRootItem())
+            elif isinstance(child, HotfixEntry):
+                self._add_entry_to_tree(child, self.tree.invisibleRootItem())
 
         # Restore expanded state, or default to depth 0 for fresh loads
         if expanded:
@@ -2218,7 +2861,6 @@ class MainWindow(QMainWindow):
         entry_count = cat.entry_count()
         enabled_count = cat.enabled_entry_count()
         item.setText(0, f"{cat.name}  ({enabled_count}/{entry_count})")
-        item.setText(1, "Category")
         item.setData(0, ROLE_DATA, cat)
         item.setForeground(0, QBrush(QColor(COLOR_CATEGORY)))
         item.setFont(0, self._bold_font())
@@ -2244,20 +2886,57 @@ class MainWindow(QMainWindow):
                 self._add_entry_to_tree(child, item)
 
     def _add_entry_to_tree(self, entry: HotfixEntry, parent_item: QTreeWidgetItem):
+        # If entry has a comment, add a non-interactive label row above it
+        if entry.comment:
+            comment_item = QTreeWidgetItem()
+            comment_text = entry.comment.lstrip("# ").strip()
+            comment_item.setText(0, f"# {comment_text}")
+            comment_item.setForeground(0, QBrush(QColor("#ffd700")))
+            font = QFont()
+            font.setItalic(True)
+            font.setPointSize(get_font_size())
+            comment_item.setFont(0, font)
+            # No checkbox, not selectable, not editable
+            comment_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            # Link it to the entry so we know it's a comment
+            comment_item.setData(0, ROLE_DATA, ("comment_for", entry))
+            parent_item.addChild(comment_item)
+
         item = QTreeWidgetItem()
         item.setText(0, entry.display_name)
-        item.setText(1, entry.simple_type)
         item.setData(0, ROLE_DATA, entry)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(0, Qt.CheckState.Checked if entry.enabled else Qt.CheckState.Unchecked)
-        self._style_entry_item(item, entry)
         parent_item.addChild(item)
+        self._style_entry_item(item, entry)
 
-    def _style_entry_item(self, item: QTreeWidgetItem, entry: HotfixEntry):
-        if entry.enabled:
-            item.setForeground(0, QBrush(QColor(COLOR_FG)))
+    def _style_entry_item(self, item: QTreeWidgetItem, entry: HotfixEntry, cat_color: str = None):
+        # Check for errors — red overrides everything
+        has_error = False
+        error_msg = ""
+        try:
+            from hotfix_highlighter import validate_hotfix
+            text = entry.simple_form if entry.simple_form else entry.raw_line
+            problems = validate_hotfix(text)
+            if problems:
+                has_error = True
+                error_msg = "; ".join(problems)
+        except Exception:
+            pass
+
+        if has_error:
+            item.setForeground(0, QBrush(QColor("#ff4444")))
+            item.setToolTip(0, "Error: " + error_msg)
         else:
-            item.setForeground(0, QBrush(QColor(COLOR_FG_DIM)))
+            # Color by command type — extract first word
+            cmd_type = entry.simple_type.split()[0].lower() if entry.simple_type else ""
+            cmd_colors = get_command_colors()
+            color = QColor(cmd_colors.get(cmd_type, COLOR_FG))
+            if not entry.enabled:
+                # Dim the color for disabled entries
+                color.setAlpha(90)
+            item.setForeground(0, QBrush(color))
+            item.setToolTip(0, "")
 
     def _bold_font(self) -> QFont:
         f = QFont()
@@ -2284,6 +2963,11 @@ class MainWindow(QMainWindow):
         """Try to reopen the last file from the previous session."""
         # Also try to load the OE datapack for the syntax highlighter
         self._try_load_datapack_for_highlighter()
+
+        # Check for updates in background
+        self._update_version = ""
+        self._update_url = ""
+        check_for_updates(parent=self)
 
         s = QSettings(SETTINGS_ORG, SETTINGS_APP)
         last_file = s.value("last_opened_file", "")
@@ -2368,6 +3052,9 @@ class MainWindow(QMainWindow):
 
     def _do_save(self, path: str):
         try:
+            # Backup existing file before overwriting
+            if Path(path).exists():
+                backup_mod_file(path)
             export_to_file(self.mod, path)
             self.mod.file_path = path
             self._unsaved = False
@@ -2393,11 +3080,15 @@ class MainWindow(QMainWindow):
     def _edit_properties(self):
         if not self.mod:
             return
-        dlg = MetadataDialog(self.mod, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        dlg = self._make_independent(MetadataDialog(self.mod, self))
+
+        def on_accepted():
             dlg.apply()
             self._mark_unsaved()
             self.setWindowTitle(f"{APP_NAME} — {self.mod.name}")
+
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
 
     def _add_category_at_root(self):
         """Add a new category at the top level (toolbar / menu bar)."""
@@ -2444,10 +3135,10 @@ class MainWindow(QMainWindow):
         self._populate_tree()
 
     def _add_entry_at_root(self):
-        """Add a new entry to the last highlighted category, or fallback to last top-level."""
+        """Add a new entry to the last highlighted category, or at root level."""
         if not self.mod:
             return
-        dlg = NewEntryDialog(self)
+        dlg = self._make_independent(NewEntryDialog(self))
 
         def on_accepted():
             entry = dlg.get_entry()
@@ -2455,57 +3146,47 @@ class MainWindow(QMainWindow):
                 return
             target = self._last_category
             if target is None:
-                if not self.mod.root.children:
-                    target = Category(name="General")
-                    self.mod.root.add_child(target)
-                else:
-                    for child in reversed(self.mod.root.children):
-                        if isinstance(child, Category):
-                            target = child
-                            break
-                    if target is None:
-                        target = Category(name="General")
-                        self.mod.root.add_child(target)
-            target.add_child(entry)
+                # No category ever selected — add directly to root
+                self.mod.root.add_child(entry)
+            else:
+                target.add_child(entry)
             self._mark_unsaved()
             self._populate_tree()
+            self._active_dialog = None
 
         dlg.accepted.connect(on_accepted)
+        dlg.rejected.connect(lambda: setattr(self, '_active_dialog', None))
         dlg.show()
 
     def _add_entry_contextual(self):
         """Add a new entry inside the selected category (right-click / Insert)."""
         if not self.mod:
             return
-        dlg = NewEntryDialog(self)
+
+        # Capture target category NOW, before the dialog opens
+        target: Category | None = None
+        sel = self.tree.currentItem()
+        if sel:
+            data = sel.data(0, ROLE_DATA)
+            if isinstance(data, Category):
+                target = data
+            elif isinstance(data, HotfixEntry):
+                parent_item = sel.parent()
+                if parent_item:
+                    target = parent_item.data(0, ROLE_DATA)
+        if target is None:
+            target = self._last_category
+
+        dlg = self._make_independent(NewEntryDialog(self))
 
         def on_accepted():
             entry = dlg.get_entry()
             if not entry:
                 return
-            target: Category | None = None
-            sel = self.tree.currentItem()
-            if sel:
-                data = sel.data(0, ROLE_DATA)
-                if isinstance(data, Category):
-                    target = data
-                elif isinstance(data, HotfixEntry):
-                    parent_item = sel.parent()
-                    if parent_item:
-                        target = parent_item.data(0, ROLE_DATA)
-            if target is None:
-                if not self.mod.root.children:
-                    target = Category(name="General")
-                    self.mod.root.add_child(target)
-                else:
-                    for child in reversed(self.mod.root.children):
-                        if isinstance(child, Category):
-                            target = child
-                            break
-                    if target is None:
-                        target = Category(name="General")
-                        self.mod.root.add_child(target)
-            target.add_child(entry)
+            if target is not None:
+                target.add_child(entry)
+            else:
+                self.mod.root.add_child(entry)
             self._mark_unsaved()
             self._populate_tree()
 
@@ -2582,20 +3263,47 @@ class MainWindow(QMainWindow):
                     return True
         return False
 
+    def _insert_key_action(self):
+        """Insert key: edit if entry is selected, add new entry otherwise."""
+        item = self.tree.currentItem()
+        if item:
+            data = item.data(0, ROLE_DATA)
+            if isinstance(data, HotfixEntry):
+                self._edit_selected()
+                return
+        self._add_entry_contextual()
+
     def _edit_selected(self):
         item = self.tree.currentItem()
         if not item:
             return
         data = item.data(0, ROLE_DATA)
         if isinstance(data, HotfixEntry):
-            dlg = EditEntryDialog(data, self)
+            # Check if this entry already has an open editor
+            if not hasattr(self, '_entry_editors'):
+                self._entry_editors: dict[int, QDialog] = {}
+            entry_id = id(data)
+            if entry_id in self._entry_editors:
+                existing = self._entry_editors[entry_id]
+                existing.raise_()
+                existing.activateWindow()
+                return
+
+            dlg = self._make_independent(EditEntryDialog(data, self))
+            self._entry_editors[entry_id] = dlg
 
             def on_accepted():
                 dlg.apply()
                 self._mark_unsaved()
                 self._populate_tree()
+                self._entry_editors.pop(entry_id, None)
+
+            def on_closed():
+                self._entry_editors.pop(entry_id, None)
 
             dlg.accepted.connect(on_accepted)
+            dlg.rejected.connect(on_closed)
+            dlg.destroyed.connect(on_closed)
             dlg.show()
 
     def _on_double_click(self, item: QTreeWidgetItem, column: int):
@@ -2627,6 +3335,18 @@ class MainWindow(QMainWindow):
             return
 
         data = item.data(0, ROLE_DATA)
+
+        # If clicked on a comment row, show the linked entry's details
+        if isinstance(data, tuple) and len(data) == 2 and data[0] == "comment_for":
+            entry = data[1]
+            if isinstance(entry, HotfixEntry):
+                self.detail_label.setText(entry.display_name)
+                self.detail_comment.setText(entry.comment if entry.comment else "(no comment)")
+                self.detail_type.setText(f"Type: {entry.simple_type}")
+                self.detail_object.setText(f"Object: {entry.object_path}")
+                self.detail_attr.setText(f"Attribute: {entry.attribute}")
+                self.detail_raw.setPlainText(entry.simple_form)
+            return
 
         # Track the last selected category (or parent category of selected entry)
         if isinstance(data, Category):
@@ -2676,6 +3396,167 @@ class MainWindow(QMainWindow):
             for c in root.children:
                 if isinstance(c, Category):
                     c.parent = root
+
+    def _show_update_available(self):
+        """Show update available dialog with option to auto-update."""
+        version = getattr(self, '_update_version', '')
+        url = getattr(self, '_update_url', '')
+        installer_url = getattr(self, '_update_installer_url', '')
+        if not version:
+            return
+
+        msg = (
+            f"A new version of {APP_NAME} is available!\n\n"
+            f"Current: {APP_VERSION}\n"
+            f"Latest: {version}\n\n"
+        )
+
+        if installer_url:
+            msg += "Would you like to download and install the update now?"
+            reply = QMessageBox.question(
+                self, "Update Available", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._download_and_install_update(installer_url, version)
+        else:
+            msg += "Would you like to open the download page?"
+            reply = QMessageBox.question(
+                self, "Update Available", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes and url:
+                from PySide6.QtGui import QDesktopServices
+                QDesktopServices.openUrl(QUrl(url))
+
+    def _download_and_install_update(self, installer_url: str, version: str):
+        """Download the installer and run it."""
+        from PySide6.QtWidgets import QProgressDialog
+        import tempfile
+
+        # Create progress dialog
+        progress = QProgressDialog(
+            f"Downloading {APP_NAME} {version}...", "Cancel", 0, 100, self
+        )
+        progress.setWindowTitle("Updating")
+        progress.setMinimumWidth(400)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setValue(0)
+        progress.show()
+
+        # Download in background thread
+        import threading
+        self._update_download_path = None
+        self._update_download_error = None
+        self._update_download_progress = 0
+        self._update_download_done = False
+        self._update_cancelled = False
+
+        progress.canceled.connect(lambda: setattr(self, '_update_cancelled', True))
+
+        temp_dir = tempfile.gettempdir()
+        filename = installer_url.split("/")[-1]
+        dest_path = Path(temp_dir) / filename
+
+        def _download():
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    installer_url,
+                    headers={"User-Agent": "OpenBL3CMM", "Accept": "application/octet-stream"}
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    total = int(resp.headers.get('Content-Length', 0))
+                    downloaded = 0
+                    chunk_size = 65536
+
+                    with open(str(dest_path), 'wb') as f:
+                        while True:
+                            if self._update_cancelled:
+                                self._update_download_error = "Cancelled"
+                                return
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                self._update_download_progress = int(downloaded * 100 / total)
+
+                self._update_download_path = str(dest_path)
+            except Exception as e:
+                self._update_download_error = str(e)
+            finally:
+                self._update_download_done = True
+
+        t = threading.Thread(target=_download, daemon=True)
+        t.start()
+
+        # Poll progress from main thread
+        from PySide6.QtCore import QTimer
+
+        def _poll():
+            if self._update_cancelled:
+                progress.close()
+                return
+
+            progress.setValue(self._update_download_progress)
+
+            if not self._update_download_done:
+                QTimer.singleShot(100, _poll)
+                return
+
+            progress.close()
+
+            if self._update_download_error:
+                if self._update_download_error != "Cancelled":
+                    QMessageBox.warning(
+                        self, "Update Failed",
+                        f"Failed to download update:\n{self._update_download_error}\n\n"
+                        f"You can download it manually from the releases page."
+                    )
+                    url = getattr(self, '_update_url', '')
+                    if url:
+                        from PySide6.QtGui import QDesktopServices
+                        QDesktopServices.openUrl(QUrl(url))
+                return
+
+            if self._update_download_path:
+                self._run_installer(self._update_download_path)
+
+        QTimer.singleShot(100, _poll)
+
+    def _run_installer(self, installer_path: str):
+        """Launch the downloaded installer and close the app."""
+        reply = QMessageBox.information(
+            self, "Update Ready",
+            f"Update downloaded successfully!\n\n"
+            f"The installer will now run. {APP_NAME} will close.\n\n"
+            f"Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        import subprocess
+
+        try:
+            # Launch installer with /SILENT — shows progress but no questions
+            # /CLOSEAPPLICATIONS tells it to close running instances
+            subprocess.Popen(
+                [installer_path, '/SILENT', '/CLOSEAPPLICATIONS'],
+                shell=False,
+            )
+            # Save state and exit
+            self._save_expanded_state()
+            QApplication.instance().quit()
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error",
+                f"Failed to launch installer:\n{e}\n\n"
+                f"The installer was saved to:\n{installer_path}\n"
+                f"You can run it manually."
+            )
 
     def _on_item_changed(self, item: QTreeWidgetItem, column: int):
         """Sync checkbox state back to the data model."""
@@ -2982,11 +3863,13 @@ class MainWindow(QMainWindow):
     def _snapshot(self, data):
         """Create an independent deep copy of a model item, safe from parent cycles."""
         if isinstance(data, HotfixEntry):
-            return HotfixEntry(
+            e = HotfixEntry(
                 raw_line=data.raw_line,
                 comment=data.comment,
                 enabled=data.enabled,
             )
+            e._original_cmd = data._original_cmd
+            return e
         elif isinstance(data, Category):
             return self._snapshot_category(data)
         return None
@@ -3001,6 +3884,7 @@ class MainWindow(QMainWindow):
                     comment=child.comment,
                     enabled=child.enabled,
                 )
+                new_entry._original_cmd = child._original_cmd
                 new_cat.add_child(new_entry)
             elif isinstance(child, Category):
                 new_sub = self._snapshot_category(child)
@@ -3187,10 +4071,19 @@ class MainWindow(QMainWindow):
             f"<p>Inspired by BLCMM (Borderlands Community Mod Manager).</p>"
         )
 
+    def _show_tutorial(self):
+        """Show the tutorial dialog."""
+        dlg = self._make_independent(TutorialDialog(self))
+        dlg.show()
+
     def _configure_shortcuts(self):
-        dlg = ShortcutDirsDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        dlg = self._make_independent(ShortcutDirsDialog(self))
+
+        def on_accepted():
             save_shortcuts(dlg.get_shortcuts())
+
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
 
     def _change_font_size(self, delta: int):
         """Increase or decrease font size by delta points."""
@@ -3204,15 +4097,66 @@ class MainWindow(QMainWindow):
         set_font_size(size)
         self._apply_stylesheet()
 
+    def _toggle_detail_panel(self, checked: bool):
+        """Show or hide the detail panel."""
+        s = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        s.setValue("show_detail_panel", checked)
+        if checked:
+            self._right_panel.show()
+        else:
+            self._right_panel.hide()
+
+    def _open_shortcut_editor(self):
+        """Open the keyboard shortcuts editor."""
+        dlg = self._make_independent(ShortcutEditorDialog(self))
+
+        def on_accepted():
+            shortcuts = dlg.get_shortcuts()
+            for name, key in shortcuts.items():
+                set_shortcut(name, key)
+            self._apply_shortcuts()
+
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
+
+    def _open_color_editor(self):
+        """Open the command color coding editor."""
+        dlg = self._make_independent(ColorCodingDialog(self))
+
+        def on_accepted():
+            colors = dlg.get_colors()
+            for cmd, color in colors.items():
+                set_command_color(cmd, color)
+            if self.mod:
+                self._populate_tree()
+
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
+
+    def _apply_shortcuts(self):
+        """Apply saved shortcuts to all menu actions."""
+        shortcuts = get_shortcuts()
+        # Re-apply shortcuts to menu actions by finding them
+        mb = self.menuBar()
+        for menu in mb.findChildren(QMenu):
+            for action in menu.actions():
+                text = action.text().replace("&", "").replace("...", "").strip()
+                if text in shortcuts:
+                    action.setShortcut(shortcuts[text])
+
     def _open_font_settings(self):
         """Open the font settings dialog."""
-        dlg = FontSettingsDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        dlg = self._make_independent(FontSettingsDialog(self))
+
+        def on_accepted():
             size, ui_font, mono_font = dlg.get_settings()
             set_font_size(size)
             set_custom_font(ui_font)
             set_custom_mono_font(mono_font)
             self._apply_stylesheet()
+
+        dlg.accepted.connect(on_accepted)
+        dlg.show()
 
     def _open_object_explorer(self):
         """Open the Object Explorer window."""
@@ -3263,7 +4207,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
 
     def closeEvent(self, event):
-        if self._unsaved:
+        if hasattr(self, '_unsaved') and self._unsaved:
             if not self._confirm_discard():
                 event.ignore()
                 return
@@ -3273,6 +4217,8 @@ class MainWindow(QMainWindow):
 
     def _save_expanded_state(self):
         """Save which categories are expanded to QSettings."""
+        if not hasattr(self, 'tree'):
+            return
         expanded = self._get_expanded_paths()
         s = QSettings(SETTINGS_ORG, SETTINGS_APP)
         s.setValue("expanded_categories", json.dumps(list(expanded)))
@@ -3303,6 +4249,104 @@ def _get_resource_path(filename: str) -> Path:
     else:
         base = Path(__file__).parent
     return base / filename
+
+
+def check_for_updates(parent=None):
+    """Check GitHub releases for a newer version. Runs in background."""
+    import threading
+    import re as _re
+
+    def _parse_version(v):
+        """Parse version into (stage, major, minor, ...) for comparison.
+        Stage: 0=alpha, 1=beta, 2=release (no prefix).
+        So Alpha-0.1 < Alpha-1.0 < Beta-0.1 < 0.1 < 1.0
+        """
+        v_lower = v.strip().lower()
+        if v_lower.startswith("alpha"):
+            stage = 0
+        elif v_lower.startswith("beta"):
+            stage = 1
+        else:
+            stage = 2
+        num_part = _re.sub(r'^[^0-9]*', '', v).strip()
+        if not num_part:
+            return None
+        try:
+            nums = tuple(int(x) for x in num_part.split("."))
+            return (stage,) + nums
+        except ValueError:
+            return None
+
+    def _check():
+        try:
+            import urllib.request
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenBL3CMM"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                import json as _json
+                data = _json.loads(resp.read().decode())
+                latest_raw = data.get("tag_name", "")
+
+                lat = _parse_version(latest_raw)
+                cur = _parse_version(APP_VERSION)
+
+                if lat and cur and lat > cur and parent:
+                    parent._update_version = latest_raw
+                    parent._update_url = data.get("html_url", "")
+
+                    # Find installer asset (Setup .exe)
+                    parent._update_installer_url = ""
+                    assets = data.get("assets", [])
+                    for asset in assets:
+                        name = asset.get("name", "").lower()
+                        if name.endswith(".exe") and "setup" in name:
+                            parent._update_installer_url = asset.get("browser_download_url", "")
+                            break
+                    # Fallback: any .exe asset
+                    if not parent._update_installer_url:
+                        for asset in assets:
+                            name = asset.get("name", "").lower()
+                            if name.endswith(".exe"):
+                                parent._update_installer_url = asset.get("browser_download_url", "")
+                                break
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+
+    # Poll after 3 seconds to check if the thread found an update
+    from PySide6.QtCore import QTimer
+    def _check_result():
+        if parent and getattr(parent, '_update_version', ''):
+            parent._show_update_available()
+    QTimer.singleShot(3000, _check_result)
+
+
+def backup_mod_file(file_path: str):
+    """Create a backup of a mod file in AppData/backups/."""
+    try:
+        src = Path(file_path)
+        if not src.exists():
+            return
+        backup_dir = get_appdata_dir() / "backups"
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = backup_dir / f"{src.stem}_{timestamp}{src.suffix}"
+        import shutil
+        shutil.copy2(str(src), str(dest))
+
+        # Keep only last 20 backups per mod name
+        prefix = src.stem
+        backups = sorted(
+            [f for f in backup_dir.iterdir() if f.stem.startswith(prefix)],
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        for old in backups[20:]:
+            old.unlink()
+    except Exception:
+        pass
 
 
 def main():

@@ -238,9 +238,8 @@ def _parse_body(lines: list[str], start: int, mod: ModFile):
     while i < n:
         line = lines[i].strip()
 
-        # Skip empty lines
+        # Skip empty lines (but keep pending comments)
         if not line:
-            pending_comments.clear()
             i += 1
             continue
 
@@ -311,9 +310,12 @@ def _parse_body(lines: list[str], start: int, mod: ModFile):
         # Check for disabled (commented-out) hotfix entry: #SparkPatchEntry,... or ##DISABLED## SparkPatchEntry,...
         disabled_line = None
         if line.startswith("#") and not line.startswith("##"):
-            # Single # prefix — check if the rest is a hotfix
+            # Single # prefix — check if the rest is a Spark hotfix (not simple commands,
+            # because "# Set the barrel mesh" is a comment, not a disabled "set" command)
             inner = line[1:].strip()
-            if is_hotfix_line(inner):
+            # Only treat as disabled if it starts with a Spark type or has comma-separated fields
+            is_spark_disabled = any(inner.startswith(ht + ",") or inner == ht for ht in HOTFIX_TYPES)
+            if is_spark_disabled:
                 disabled_line = inner
         elif line.startswith("##DISABLED##"):
             inner = line[len("##DISABLED##"):].strip()
