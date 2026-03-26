@@ -1,0 +1,18 @@
+'blmod':
+'version': 1
+'encoding': utf8
+'games':
+  - bl3
+'metadata':
+  'title': 'Template Mod'
+  'version': '0.1.0'
+---
+'category': 'root'
+'contains':
+  - 
+    'category': '1'
+    'contains':
+      - 'enabled': |-
+          SparkPatchEntry,(1,1,0,),Part_PS_JAK_Barrel_Maggie,InventoryAttributeEffects,0,,((AttributeToModify=/Game/GameData/Weapons/Att_Weapon_Damage.Att_Weapon_Damage,ModifierType=ScaleSimple,ModifierValue= (BaseValueConstant=0.0,DataTableValue= (DataTable=/Game/Gear/Weapons/_Shared/_Design/GameplayAttributes/_Unique/DataTable_WeaponBalance_Unique_JAK.DataTable_WeaponBalance_Unique_JAK,RowName=PS_Maggie,ValueName=DamageScale_2_4F6EF14648BA8F2AE9217DAFEA60EE53),BaseValueScale=1.0)),(AttributeToModify=/Game/GameData/Weapons/Att_Weapon_Spread.Att_Weapon_Spread,ModifierType=ScaleSimple,ModifierValue= (BaseValueConstant=3.5,BaseValueScale=1.0)),(AttributeToModify=/Game/GameData/Weapons/Att_Weapon_MaxLoadedAmmo.Att_Weapon_MaxLoadedAmmo,ModifierType=PreAdd,ModifierValue= (BaseValueConstant=4.0,BaseValueScale=1.0)),(AttributeToModify=/Game/GameData/Weapons/Att_Weapon_CustomSightColorScheme.Att_Weapon_CustomSightColorScheme,ModifierType=OverrideBaseValue,ModifierValue= (BaseValueConstant=1.0,BaseValueScale=1.0)),(AttributeToModify=/Game/GameData/Weapons/Att_Weapon_ProjectilesPerShot.Att_Weapon_ProjectilesPerShot,ModifierType=PreAdd,ModifierValue= (BaseValueConstant=44.0,BaseValueScale=1.0)))
+      - 'enabled': |-
+          SparkPatchEntry,(1,2,0,),DataTable_WeaponBalance_Unique_JAK,PS_Maggie,),0,,500.0
