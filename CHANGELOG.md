@@ -14,7 +14,7 @@ Features Added Since Alpha 1.0 (Mar 26, 2026)
 
 **Per-Command Color Coding**
 
-* Each command type has its own color: `set` = blue, `edit` = green, `early\_set` = cyan, `merge` = purple, `clone` = yellow/gold (#f8a715), `delete` = pink, `create` = teal, `news`/`rename` = orange, `exec` = maroon-pink, `set\_mesh` = soft yellow
+* Each command type has its own color: `set` = blue, `edit` = green, `early\_set` = cyan, `merge` = purple, `clone` = yellow/gold (#f8a715), `delete` = pink, `create` = teal, `news`/`rename` = orange, `exec` = maroon-pink, `set\_mesh` = soft yellow `Errors` = Red
 * Colors customizable via Preferences → Command Color Coding (with color picker per command)
 * Colors persist across sessions via QSettings
 
