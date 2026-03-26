@@ -1,6 +1,7 @@
 # Changelog
 
 ## Beta-1.0 (March 2026)
+Features Added Since Alpha 1.0 (Mar 26, 2026)
 
 ### New Features
 
