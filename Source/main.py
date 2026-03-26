@@ -47,7 +47,7 @@ SETTINGS_APP = "BL3"
 def get_appdata_dir() -> Path:
     """Get the AppData folder for OpenBL3CMM. Creates it if needed."""
     if sys.platform == "win32":
-        base = Path.home() / "AppData" / "Roaming" / "OpenBL3CMM"
+        base = Path.home() / "AppData" / "Local" / "Programs" / "OpenBL3CMM"
     else:
         base = Path.home() / ".openbl3cmm"
     base.mkdir(parents=True, exist_ok=True)

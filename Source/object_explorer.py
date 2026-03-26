@@ -532,7 +532,7 @@ class ObjectExplorerWidget(QWidget):
     # ── Datapack loading ──
 
     def _try_load_last_db(self):
-        """Try to load the last used datapack."""
+        """Try to load the last used datapack, or auto-detect from AppData."""
         s = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self._json_data_dir = s.value("object_explorer_json_dir", "")
         self._json_archive_path = s.value("object_explorer_json_archive", "")
@@ -542,8 +542,26 @@ class ObjectExplorerWidget(QWidget):
         self._refs_db: ObjectExplorerDB | None = None
         self._refs_db_path = s.value("object_explorer_refs_db", "")
         last_db = s.value("object_explorer_db", "")
+
+        # Try last used DB first
         if last_db and Path(last_db).is_file():
             self._open_db(last_db)
+        else:
+            # Auto-detect: scan AppData/datapacks/ for .sqlite3, .db, .sql files
+            try:
+                from main import get_appdata_dir
+                datapacks_dir = get_appdata_dir() / "datapacks"
+                if datapacks_dir.is_dir():
+                    db_extensions = (".sqlite3", ".sqlite", ".db", ".sql")
+                    for f in sorted(datapacks_dir.iterdir()):
+                        if f.suffix.lower() in db_extensions and f.is_file():
+                            self._open_db(str(f))
+                            # Save so it's remembered next time
+                            s.setValue("object_explorer_db", str(f))
+                            break
+            except Exception:
+                pass
+
         # Also load refs DB if set
         if self._refs_db_path and Path(self._refs_db_path).is_file():
             try:
