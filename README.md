@@ -36,7 +36,7 @@ The Object Explorer lets you browse all BL3 game objects. To use it:
 |------|-------------|
 | [OpenBL3CMM_Setup.exe](https://github.com/mantorofficial/OpenBL3CMM/releases) | Windows installer (from Releases) |
 | [Template_Mod.blmod](Template_Mod.blmod) | Template mod file to get started |
-| [data.sql](data.sql) | BL3 Object Explorer datapack — place in `%LOCALAPPDATA%\Programs\OpenBL3CMM\datapacks\` |
+| [bl3data.sqlite3](bl3data.sqlite3) | BL3 Object Explorer datapack — place in `%LOCALAPPDATA%\Programs\OpenBL3CMM\datapacks\` |
 
 ## Features
 
