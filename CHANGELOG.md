@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.0 (May 2026)
+Features Added Since Beta-1.0 (March 2026)
+
+### New Features
+
+**Overwrite Highlighting**
+
+* Tree now flags entries that target the same object and the same property as conflicts
+* Winning entry (last in load order) is drawn with a green row background (#2ecc71)
+* Overwritten entries are drawn with a light green row background (#a9dfbf)
+* Colors are fixed and not user-configurable — they reflect actual mod state, not preference
+* Foreground command-type colors (set=blue, edit=green, clone=gold, delete=pink) stay on the entry text so both signals are visible at once
+* Highlight clears automatically when one of the conflicting entries is deleted or retargeted
+* Disabled entries never participate in conflict detection
+* MUT-category siblings (mutually exclusive choices) are excluded — only one branch runs at a time, so they don't conflict with each other
+* Detection updates on every tree mutation: add, edit, delete, toggle, paste, drag-drop
+
+**Root Category on New Mods**
+
+* `File → New Mod`, the toolbar New button, and Ctrl+N now seed the tree with a renamable/deletable root category named after the mod
+* Tree is never empty on creation — gives a clear place to start adding entries
+* Internal auto-load fallbacks (no last-opened file, failed restore, etc.) do NOT seed a root, so they don't pollute the tree with a stray "New Mod" category
+
+**Open-to-Root Focus**
+
+* Opening a `.bl3hotfix` or `.blmod` via `File → Open` now collapses the tree, selects the new mod's top-level category, and scrolls it to the top of the viewport
+* Replaces the previous behavior of restoring scroll/selection state from whatever was open before
+* Focus is deferred to the next event-loop tick so Qt has time to lay out items before scrolling
+
+**File Associations (Windows Explorer Integration)**
+
+* Double-clicking a `.bl3hotfix` or `.blmod` file in Windows Explorer now launches OpenBL3CMM with that file open
+* "Open With → OpenBL3CMM" works for both extensions
+* Launching the app without arguments still restores the last-opened mod (existing behavior preserved)
+* Command-line launch with a file path argument also works (`OpenBL3CMM.exe somefile.bl3hotfix`)
+* The launched file is recorded as the new last-opened, so closing and re-launching normally restores it
+
+### Improvements
+
+**Tutorial Updated**
+
+* Color Coding tutorial page extended with an Overwrite Highlighting section explaining the green/light-green system and how to clear the highlight
+
+**Internal `\_new\_mod` Refactor**
+
+* Split into `\_new\_mod` (user-facing, seeds root) and `\_do\_new\_mod(seed\_root)` (internal, configurable)
+* Cleaner separation between explicit user action and silent fallback paths
+
+**Version Scheme**
+
+* Dropped the `Beta-` prefix — OpenBL3CMM is out of beta with this release
+* Update-check version comparator still handles transitions correctly: any unprefixed version (1.0+) sorts above all Beta-* and Alpha-* releases, so users on Beta-1.0 will receive the 1.0 update prompt
+
+### Bug Fixes
+
+* Fixed `_conflict_state` AttributeError on startup when auto-loading a saved file (attribute was never initialized in `MainWindow.__init__`, causing silent failure that fell through to a blank tree)
+* Fixed misplaced `self.\_conflict\_state` initializer that had been accidentally pasted into `ShortcutDirsDialog.\_\_init\_\_` instead of `MainWindow.\_\_init\_\_`
+* Fixed `_open_fresh_focus` not computing conflicts on the freshly-loaded mod — entries opened from disk previously had no conflict highlighting until the next tree rebuild
+
+  
 ## Beta-1.0 (March 2026)
 Features Added Since Alpha 1.0 (Mar 26, 2026)
 
