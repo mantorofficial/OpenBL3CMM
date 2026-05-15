@@ -10,7 +10,7 @@
 ;   4. Output: Output\OpenBL3CMM_Setup.exe
 
 #define MyAppName "OpenBL3CMM"
-#define MyAppVersion "Beta-1.0"
+#define MyAppVersion "1.0"
 #define MyAppPublisher "Ty-Gone"
 #define MyAppURL "https://github.com/mantorofficial/OpenBL3CMM"
 #define MyAppExeName "OpenBL3CMM.exe"
@@ -67,6 +67,17 @@ Root: HKA; Subkey: "Software\Classes\.blmod"; ValueType: string; ValueData: "Ope
 Root: HKA; Subkey: "Software\Classes\OpenBL3CMM.blmod"; ValueType: string; ValueData: "BL3 Mod File"; Flags: uninsdeletekey; Tasks: associateblmod
 Root: HKA; Subkey: "Software\Classes\OpenBL3CMM.blmod\DefaultIcon"; ValueType: string; ValueData: "{app}\openbl3cmm.ico"; Tasks: associateblmod
 Root: HKA; Subkey: "Software\Classes\OpenBL3CMM.blmod\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: associateblmod
+; .bl3hotfix association
+Root: HKCR; Subkey: ".bl3hotfix"; ValueType: string; ValueName: ""; ValueData: "OpenBL3CMM.bl3hotfix"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "OpenBL3CMM.bl3hotfix"; ValueType: string; ValueName: ""; ValueData: "BL3 Hotfix Mod"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "OpenBL3CMM.bl3hotfix\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\OpenBL3CMM.exe,0"
+Root: HKCR; Subkey: "OpenBL3CMM.bl3hotfix\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\OpenBL3CMM.exe"" ""%1"""
+
+; .blmod association
+Root: HKCR; Subkey: ".blmod"; ValueType: string; ValueName: ""; ValueData: "OpenBL3CMM.blmod"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "OpenBL3CMM.blmod"; ValueType: string; ValueName: ""; ValueData: "BL3 Mod File"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "OpenBL3CMM.blmod\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\OpenBL3CMM.exe,0"
+Root: HKCR; Subkey: "OpenBL3CMM.blmod\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\OpenBL3CMM.exe"" ""%1"""
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

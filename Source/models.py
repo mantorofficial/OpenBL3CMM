@@ -207,3 +207,59 @@ class ModFile:
                     out.append(child)
             elif isinstance(child, Category):
                 self._collect_entries(child, out, enabled_only)
+
+
+# ──────────────────────────────────────────────
+# Conflict detection — Beta-1.1
+# ──────────────────────────────────────────────
+
+class ConflictState(enum.Enum):
+    NONE = 0
+    WINNER = 1
+    LOSER = 2
+
+
+def _iter_entries_for_conflicts(cat: Category, mut_stack: list):
+
+    pushed = False
+    if cat.mutually_exclusive:
+        mut_stack.append(id(cat))
+        pushed = True
+    for child in cat.children:
+        if isinstance(child, HotfixEntry):
+            yield child, (mut_stack[-1] if mut_stack else None)
+        elif isinstance(child, Category):
+            yield from _iter_entries_for_conflicts(child, mut_stack)
+    if pushed:
+        mut_stack.pop()
+
+
+def compute_conflicts(mod: "ModFile") -> dict[int, ConflictState]:
+    groups: dict[tuple, list] = {}
+    result: dict[int, ConflictState] = {}
+
+    load_index = 0
+    for entry, mut_id in _iter_entries_for_conflicts(mod.root, []):
+        result[id(entry)] = ConflictState.NONE
+        if not entry.enabled:
+            load_index += 1
+            continue
+        obj = (entry.object_path or "").strip()
+        prop = (entry.attribute or "").strip()
+        if not obj or not prop:
+            load_index += 1
+            continue
+        key = (obj.lower(), prop.lower(), mut_id)
+        groups.setdefault(key, []).append((load_index, entry))
+        load_index += 1
+
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda t: t[0])
+        for _, e in members[:-1]:
+            result[id(e)] = ConflictState.LOSER
+        _, last = members[-1]
+        result[id(last)] = ConflictState.WINNER
+
+    return result

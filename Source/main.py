@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QStyle,
 )
 
-from models import ModFile, Category, HotfixEntry
+from models import ModFile, Category, HotfixEntry, ConflictState, compute_conflicts
 from parser import parse_file, parse_text
 from exporter import export_to_file, export_to_text
 from commands import simple_to_spark, spark_to_simple, SIMPLE_COMMANDS, COMMAND_HELP
@@ -36,7 +36,7 @@ from commands import simple_to_spark, spark_to_simple, SIMPLE_COMMANDS, COMMAND_
 # ──────────────────────────────────────────────
 
 APP_NAME = "OpenBL3CMM"
-APP_VERSION = "Beta-1.0"
+APP_VERSION = "1.0"
 GITHUB_REPO = "mantorofficial/OpenBL3CMM"
 
 # Settings keys
@@ -343,7 +343,9 @@ QTreeWidget::item {{
     margin: 1px 2px;
 }}
 QTreeWidget::item:selected {{
-    background-color: {t['selection']};
+    background-color: {t['accent_dim']};
+    border: 1px solid {t['accent']};
+    border-radius: 4px;
 }}
 QTreeWidget::item:hover {{
     background-color: {t['hover']};
@@ -580,6 +582,8 @@ COLOR_CATEGORY = _t["category"]
 COLOR_SELECTION = _t["selection"]
 COLOR_BORDER = _t["border"]
 COLOR_HOVER = _t["hover"]
+CONFLICT_WINNER_BG = "#2ecc71"
+CONFLICT_LOSER_BG  = "#a9dfbf"
 
 # Command-type entry colors — each command type gets its own color
 COMMAND_TYPE_COLORS = {
@@ -1549,6 +1553,139 @@ class EditEntryDialog(QDialog):
         self.entry._parse()
 
 
+class MultiEditDialog(QDialog):
+    """Dialog for editing multiple hotfix entries in one window with tabs."""
+
+    def __init__(self, entries: list, parent=None):
+        super().__init__(parent)
+        self.entries = entries
+        self.setWindowTitle(f"Edit {len(entries)} Entries")
+        self.resize(850, 500)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        from PySide6.QtWidgets import QTabWidget
+        self._tabs = QTabWidget()
+        self._tabs.setTabsClosable(False)
+        layout.addWidget(self._tabs, stretch=1)
+
+        self._editors: list[dict] = []
+
+        for i, entry in enumerate(entries):
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setSpacing(4)
+
+            # Comment
+            top = QHBoxLayout()
+            top.addWidget(QLabel("Comment:"))
+            comment_edit = QLineEdit(entry.comment)
+            top.addWidget(comment_edit, stretch=1)
+            btn_fmt = QPushButton("Auto Format")
+            page_layout.addLayout(top)
+
+            # Command editor
+            raw_edit = QTextEdit()
+            display = entry.simple_form if entry.simple_form else entry.raw_line
+            if '(' in display:
+                display = auto_format_hotfix(display)
+            raw_edit.setPlainText(display)
+            raw_edit.setMinimumHeight(120)
+            page_layout.addWidget(raw_edit, stretch=1)
+
+            # Syntax highlighter
+            from hotfix_highlighter import HotfixHighlighter
+            highlighter = HotfixHighlighter(raw_edit.document())
+
+            btn_fmt.clicked.connect(lambda checked, e=raw_edit: e.setPlainText(
+                auto_format_hotfix(e.toPlainText().strip())
+            ))
+
+            self._editors.append({
+                "entry": entry,
+                "comment": comment_edit,
+                "raw": raw_edit,
+                "original_raw": entry.raw_line,
+            })
+
+            # Tab label: short name
+            cmd_type = entry.simple_type.split()[0] if entry.simple_type else "entry"
+            obj_short = entry.object_path.rsplit("/", 1)[-1] if entry.object_path else ""
+            tab_name = f"{cmd_type} {obj_short}"
+            if len(tab_name) > 40:
+                tab_name = tab_name[:37] + "..."
+            self._tabs.addTab(page, f"{i+1}. {tab_name}")
+
+        # Navigation hint
+        nav_label = QLabel(f"Editing {len(entries)} entries  •  Use tabs to switch between them")
+        nav_label.setStyleSheet("color: #888; font-style: italic;")
+        layout.addWidget(nav_label)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_ok = QPushButton("Apply All")
+        btn_ok.clicked.connect(self._on_ok)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+    def _on_ok(self):
+        """Validate all entries before accepting."""
+        from hotfix_highlighter import validate_hotfix
+        all_problems = []
+        for i, ed in enumerate(self._editors):
+            text = ed["raw"].toPlainText().strip()
+            problems = validate_hotfix(text)
+            if problems:
+                all_problems.append(f"Entry {i+1}: " + "; ".join(problems))
+
+        if all_problems:
+            msg = "Some entries have potential problems:\n\n"
+            for p in all_problems:
+                msg += f"  • {p}\n"
+            msg += "\nContinue anyway?"
+            reply = QMessageBox.question(
+                self, "Confirm", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self.accept()
+
+    def apply_all(self):
+        """Apply changes to all entries."""
+        import re
+        for ed in self._editors:
+            entry = ed["entry"]
+            entry.comment = ed["comment"].text().strip()
+            text = ed["raw"].toPlainText().strip()
+
+            collapsed = " ".join(line.strip() for line in text.splitlines())
+            collapsed = re.sub(r'\(\s+', '(', collapsed)
+            collapsed = re.sub(r'\s+\)', ')', collapsed)
+            collapsed = re.sub(r',\s+', ',', collapsed)
+
+            spark_types = ("SparkPatchEntry", "SparkLevelPatchEntry",
+                           "SparkCharacterLoadedEntry", "SparkEarlyLevelPatchEntry",
+                           "InjectNewsItem")
+
+            if any(collapsed.startswith(st) for st in spark_types):
+                entry.raw_line = collapsed
+            else:
+                converted = simple_to_spark(collapsed)
+                if converted:
+                    entry.raw_line = converted
+                else:
+                    entry.raw_line = collapsed
+            entry._parse()
+
+
 # ──────────────────────────────────────────────
 # Mod Metadata Dialog
 # ──────────────────────────────────────────────
@@ -2124,9 +2261,17 @@ TUTORIAL_PAGES = [
             "Disabled entries are commented out in the file (prefixed with #).\n\n"
             "Entries are color-coded by command type:\n"
             "  Blue = set  |  Green = edit  |  Cyan = early_set\n"
-            "  Purple = merge  |  Yellow = clone  |  Pink = delete\n"
-            "  Red = Incorrect Command Syntax\n\n"
-            "You can customize colors in  Preferences → Command Color Coding."
+            "  Purple = merge  |  Yellow = clone  |  Pink = delete\n\n"
+            "You can customize colors in  Preferences → Command Color Coding.\n\n"
+            "When two or more entries target the same object AND the same\n"
+            "property, only the last one in load order actually takes effect.\n"
+            "OpenBL3CMM flags these automatically:\n\n"
+            "  Green row       = the entry that wins\n"
+            "  Light green row = entries being overwritten\n\n"
+            "These colors are fixed and not configurable. To clear the\n"
+            "highlight, either delete one of the conflicting entries or\n"
+            "retarget one so it touches a different object/property.\n"
+            "Disabled entries and MUT-category siblings are excluded."
         ),
     },
     {
@@ -2453,7 +2598,7 @@ class DragDropTreeWidget(QTreeWidget):
 
 class MainWindow(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, launch_file: str = ""):    # <-- new arg
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(1100, 750)
@@ -2469,8 +2614,9 @@ class MainWindow(QMainWindow):
         self._unsaved = False
         self._updating_tree = False
         self._clipboard: list = []
-        self._last_category: Category | None = None  # tracks last selected/highlighted category
-        self._open_dialogs: list = []  # prevent GC of non-modal dialogs
+        self._last_category: Category | None = None
+        self._open_dialogs: list = []
+        self._conflict_state: dict[int, ConflictState] = {}
 
         self._build_menu()
         self._build_toolbar()
@@ -2478,8 +2624,12 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         self._apply_shortcuts()
 
-        # Try to reopen the last file, otherwise start blank
-        self._auto_load_last_file()
+        # If Windows Explorer launched us with a file, open that.
+        # Otherwise restore the last-opened file.
+        if launch_file and Path(launch_file).is_file():
+            self._load_file_from_disk(launch_file)
+        else:
+            self._auto_load_last_file()
 
         # Show tutorial on first launch
         s = QSettings(SETTINGS_ORG, SETTINGS_APP)
@@ -2496,6 +2646,9 @@ class MainWindow(QMainWindow):
         # Track to prevent GC
         self._open_dialogs.append(dlg)
         dlg.destroyed.connect(lambda: self._open_dialogs.remove(dlg) if dlg in self._open_dialogs else None)
+        # Focus the window when shown
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, lambda: (dlg.raise_(), dlg.activateWindow()))
         return dlg
 
     # ── Menu bar ──
@@ -2790,7 +2943,6 @@ class MainWindow(QMainWindow):
         else:
             self.status.showMessage("No mod loaded")
 
-    # ── Tree population ──
 
     def _populate_tree(self):
         """Rebuild the tree widget from the current ModFile."""
@@ -2802,6 +2954,7 @@ class MainWindow(QMainWindow):
         scroll_pos = self.tree.verticalScrollBar().value() if self.tree.verticalScrollBar() else 0
 
         self.tree.clear()
+        self._conflict_state = compute_conflicts(self.mod) if self.mod else {}
         if not self.mod:
             self._updating_tree = was_updating
             return
@@ -2939,6 +3092,14 @@ class MainWindow(QMainWindow):
             item.setForeground(0, QBrush(color))
             item.setToolTip(0, "")
 
+        state = self._conflict_state.get(id(entry), ConflictState.NONE)
+        if state == ConflictState.WINNER:
+            item.setBackground(0, QBrush(QColor(CONFLICT_WINNER_BG)))
+        elif state == ConflictState.LOSER:
+            item.setBackground(0, QBrush(QColor(CONFLICT_LOSER_BG)))
+        else:
+            item.setBackground(0, QBrush())  # clear any prior tint
+
     def _bold_font(self) -> QFont:
         f = QFont()
         f.setBold(True)
@@ -2977,10 +3138,10 @@ class MainWindow(QMainWindow):
                 self.mod = parse_file(last_file)
                 self._flatten_root()
                 self._unsaved = False
-                # Load saved expanded state
                 saved_expanded = self._load_expanded_state()
                 self._updating_tree = True
                 self.tree.clear()
+                self._conflict_state = compute_conflicts(self.mod)
                 for child in self.mod.root.children:
                     if isinstance(child, Category):
                         self._add_category_to_tree(child, self.tree.invisibleRootItem())
@@ -2995,7 +3156,29 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         # Fallback to blank mod
-        self._new_mod()
+        self._do_new_mod(seed_root=False)  # <-- was: self._new_mod()
+
+    def _load_file_from_disk(self, path: str):
+        """Load a file path directly — used when launched from Explorer with a
+        file argument. Behaves like File→Open but skips the file dialog."""
+        self._try_load_datapack_for_highlighter()
+        # Skip the update check on file-launch — it'll run on the normal startup path
+        # next time. Or include it if you want; it's harmless.
+        self._update_version = ""
+        self._update_url = ""
+        check_for_updates(parent=self)
+
+        try:
+            self.mod = parse_file(path)
+            self._flatten_root()
+            self._unsaved = False
+            self._open_fresh_focus()
+            self.setWindowTitle(f"{APP_NAME} — {self.mod.name}")
+            self._save_last_file_path(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open file:\n{e}")
+            # Fall back to blank rather than dying
+            self._do_new_mod(seed_root=False)
 
     def _save_last_file_path(self, path: str):
         """Remember the current file path for next launch."""
@@ -3005,7 +3188,12 @@ class MainWindow(QMainWindow):
     def _new_mod(self):
         if self._unsaved and not self._confirm_discard():
             return
+        self._do_new_mod(seed_root=True)
+
+    def _do_new_mod(self, seed_root: bool):
         self.mod = ModFile(name="New Mod", author="", version="0.1.0")
+        if seed_root:
+            self.mod.root.add_child(Category(name="New Mod"))
         self._unsaved = False
         self._populate_tree()
         self.setWindowTitle(f"{APP_NAME} — New Mod")
@@ -3017,21 +3205,78 @@ class MainWindow(QMainWindow):
         dlg = ModFileDialog(self, mode="open", caption="Open BL3 Hotfix Mod",
                             filter_str="All Mod Files (*.bl3hotfix *.blmod *.txt);;BL3 Hotfix (*.bl3hotfix);;BLMOD (*.blmod);;Text Files (*.txt);;All Files (*)")
         if dlg.exec() != QDialog.DialogCode.Accepted:
+            print("[OPEN] dialog cancelled")
             return
 
         path = dlg.get_path()
+        print(f"[OPEN] selected path: {path!r}")
         if not path:
+            print("[OPEN] empty path, bailing")
             return
 
         try:
+            print(f"[OPEN] parsing {path}")
             self.mod = parse_file(path)
+            print(f"[OPEN] parsed. mod.name={self.mod.name!r}, root.children={len(self.mod.root.children)}")
             self._flatten_root()
+            print(f"[OPEN] after flatten: root.children={len(self.mod.root.children)}")
+            for i, c in enumerate(self.mod.root.children):
+                print(f"  [{i}] {type(c).__name__}: {getattr(c, 'name', getattr(c, 'raw_line', '?'))[:60]}")
             self._unsaved = False
-            self._populate_tree()
+            self._open_fresh_focus()
+            print(f"[OPEN] tree top-level items: {self.tree.invisibleRootItem().childCount()}")
             self.setWindowTitle(f"{APP_NAME} — {self.mod.name}")
             self._save_last_file_path(path)
+            print(f"[OPEN] done, window title set")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to parse file:\n{e}")
+
+    def _open_fresh_focus(self):
+        """Populate tree for a freshly-opened file and focus on its root.
+        Ignores any previous expanded-state or scroll position."""
+        was_updating = self._updating_tree
+        self._updating_tree = True
+        self.tree.clear()
+
+        if not self.mod:
+            self._updating_tree = was_updating
+            self._update_status()
+            return
+
+        # Compute conflicts once for the new tree
+        self._conflict_state = compute_conflicts(self.mod)
+
+        # Build the tree
+        for child in self.mod.root.children:
+            if isinstance(child, Category):
+                self._add_category_to_tree(child, self.tree.invisibleRootItem())
+            elif isinstance(child, HotfixEntry):
+                self._add_entry_to_tree(child, self.tree.invisibleRootItem())
+
+        self._updating_tree = was_updating
+        self._update_status()
+
+        # Now focus — must happen AFTER tree is populated AND signals are unblocked.
+        # Defer to the next event loop tick so Qt has laid out items.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._do_focus_root)
+
+    def _do_focus_root(self):
+        """Actually perform the focus, scheduled after layout completes."""
+        root_item = self.tree.invisibleRootItem()
+        if root_item.childCount() == 0:
+            return
+        self.tree.collapseAll()
+        first = root_item.child(0)
+        self.tree.expandItem(first)
+        self.tree.setCurrentItem(first)
+        self.tree.scrollToItem(first, QAbstractItemView.ScrollHint.PositionAtTop)
+        # Force scrollbar to top in case scrollToItem didn't trigger (empty viewport, etc.)
+        sb = self.tree.verticalScrollBar()
+        if sb:
+            sb.setValue(0)
 
     def _save_file(self):
         if not self.mod:
@@ -3265,14 +3510,86 @@ class MainWindow(QMainWindow):
         return False
 
     def _insert_key_action(self):
-        """Insert key: edit if entry is selected, add new entry otherwise."""
-        item = self.tree.currentItem()
-        if item:
+        """Insert key: edit selected entries, or add new entry if none/category selected."""
+        selected = self.tree.selectedItems()
+        entries = []
+        for item in selected:
             data = item.data(0, ROLE_DATA)
             if isinstance(data, HotfixEntry):
-                self._edit_selected()
-                return
-        self._add_entry_contextual()
+                entries.append(data)
+
+        if len(entries) > 1:
+            # Multiple entries — open multi-edit dialog
+            self._edit_multiple(entries)
+        elif len(entries) == 1:
+            # Single entry — open single editor
+            self._edit_entry(entries[0])
+        else:
+            self._add_entry_contextual()
+
+    def _edit_multiple(self, entries: list):
+        """Open a multi-entry editor for several entries at once."""
+        # Check if any of these entries already have open editors
+        if hasattr(self, '_entry_editors'):
+            for entry in entries:
+                eid = id(entry)
+                if eid in self._entry_editors:
+                    self._entry_editors[eid].raise_()
+                    self._entry_editors[eid].activateWindow()
+                    return
+
+        dlg = self._make_independent(MultiEditDialog(entries, self))
+
+        # Track all entries as having open editors
+        if not hasattr(self, '_entry_editors'):
+            self._entry_editors = {}
+        entry_ids = [id(e) for e in entries]
+        for eid in entry_ids:
+            self._entry_editors[eid] = dlg
+
+        def on_accepted():
+            dlg.apply_all()
+            self._mark_unsaved()
+            self._populate_tree()
+            for eid in entry_ids:
+                self._entry_editors.pop(eid, None)
+
+        def on_closed():
+            for eid in entry_ids:
+                self._entry_editors.pop(eid, None)
+
+        dlg.accepted.connect(on_accepted)
+        dlg.rejected.connect(on_closed)
+        dlg.destroyed.connect(on_closed)
+        dlg.show()
+
+    def _edit_entry(self, entry: HotfixEntry):
+        """Open an editor for a specific entry (with duplicate prevention)."""
+        if not hasattr(self, '_entry_editors'):
+            self._entry_editors: dict[int, QDialog] = {}
+        entry_id = id(entry)
+        if entry_id in self._entry_editors:
+            existing = self._entry_editors[entry_id]
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        dlg = self._make_independent(EditEntryDialog(entry, self))
+        self._entry_editors[entry_id] = dlg
+
+        def on_accepted():
+            dlg.apply()
+            self._mark_unsaved()
+            self._populate_tree()
+            self._entry_editors.pop(entry_id, None)
+
+        def on_closed():
+            self._entry_editors.pop(entry_id, None)
+
+        dlg.accepted.connect(on_accepted)
+        dlg.rejected.connect(on_closed)
+        dlg.destroyed.connect(on_closed)
+        dlg.show()
 
     def _edit_selected(self):
         item = self.tree.currentItem()
@@ -3280,32 +3597,7 @@ class MainWindow(QMainWindow):
             return
         data = item.data(0, ROLE_DATA)
         if isinstance(data, HotfixEntry):
-            # Check if this entry already has an open editor
-            if not hasattr(self, '_entry_editors'):
-                self._entry_editors: dict[int, QDialog] = {}
-            entry_id = id(data)
-            if entry_id in self._entry_editors:
-                existing = self._entry_editors[entry_id]
-                existing.raise_()
-                existing.activateWindow()
-                return
-
-            dlg = self._make_independent(EditEntryDialog(data, self))
-            self._entry_editors[entry_id] = dlg
-
-            def on_accepted():
-                dlg.apply()
-                self._mark_unsaved()
-                self._populate_tree()
-                self._entry_editors.pop(entry_id, None)
-
-            def on_closed():
-                self._entry_editors.pop(entry_id, None)
-
-            dlg.accepted.connect(on_accepted)
-            dlg.rejected.connect(on_closed)
-            dlg.destroyed.connect(on_closed)
-            dlg.show()
+            self._edit_entry(data)
 
     def _on_double_click(self, item: QTreeWidgetItem, column: int):
         data = item.data(0, ROLE_DATA)
@@ -4368,7 +4660,6 @@ def main():
         icon = QIcon(str(icon_path))
         app.setWindowIcon(icon)
     else:
-        # Try .png fallback or other locations
         for name in ("openbl3cmm.ico", "openbl3cmm.png"):
             p = Path(__file__).parent / name
             if p.exists():
@@ -4376,7 +4667,19 @@ def main():
                 app.setWindowIcon(icon)
                 break
 
-    window = MainWindow()
+    # NEW: pick up a file path passed by Windows Explorer / "Open with"
+    # sys.argv[0] is the exe; sys.argv[1] (if present) is the file to open.
+    launch_file = ""
+    for arg in app.arguments()[1:]:
+        # Skip Qt-internal flags that survive QApplication parsing
+        if arg.startswith("-"):
+            continue
+        candidate = Path(arg)
+        if candidate.is_file():
+            launch_file = str(candidate)
+            break
+
+    window = MainWindow(launch_file=launch_file)
     window.show()
     sys.exit(app.exec())
 
