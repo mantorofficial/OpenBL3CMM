@@ -55,6 +55,9 @@ The Object Explorer lets you browse all BL3 game objects. To use it:
 - **Copy / Cut / Paste** entries and categories
 - **Search** across all entries
 - **Independent windows** — edit multiple entries simultaneously without overlap
+- **Overwrite highlighting** — entries that target the same object and property are flagged in the tree: green for the winning entry, light green for the ones being overwritten
+- **Root category on new mods** — fresh mods open with a renamable root category so the tree is never empty
+- **Open-to-root focus** — loading a `.bl3hotfix` or `.blmod` jumps to the new mod's root instead of restoring the previous file's scroll position
 
 ### Object Explorer
 - **Auto-load datapack** — drop `data.sql` in the datapacks folder and it's detected automatically
